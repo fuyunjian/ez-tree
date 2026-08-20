@@ -188,6 +188,25 @@ export default class TreeOptions {
 
       // Calculates custom normals to imply a rounded canopy shape
       roundedNormals: true,
+
+      // Cloud-slab foliage (云片叶簇, stage C). When enabled, each leaf
+      // placement becomes a flat horizontal foliage cluster instead of the
+      // default billboard quad. The cluster is `layers` stacked horizontal
+      // discs (triangle fans) in the local XZ plane, slightly offset in Y so
+      // it reads as a layered "cloud slab" puff — the signature canopy of an
+      // ancient cypress (古柏) like the Zhang-Fei-bai. Placement (which
+      // branches carry foliage, how many, density) is still driven by the
+      // leaf controls above (count / level / density / start); this block
+      // only controls the slab geometry.
+      slab: {
+        enabled: false, // replaces billboard leaves with cloud-slab foliage
+        radius: 5, // horizontal radius of one slab cluster (world units)
+        thickness: 1.5, // vertical spacing/thickness of each stacked layer
+        layers: 3, // number of stacked horizontal sheets per cluster
+        tilt: 12, // max random tilt off horizontal, in degrees
+        segments: 12, // radial subdivisions of each disc
+        radiusVariance: 0.3, // per-cluster random radius jitter (0..1)
+      },
     };
 
     // Trunk sculpting (stage A). Affects level-0 branches (the trunk) only.

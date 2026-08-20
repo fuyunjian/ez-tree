@@ -508,7 +508,12 @@ export class Tree extends THREE.Group {
     });
 
     for (let i = 0; i < this.skeleton.leaves.length; i += leafStride) {
-      this.#meshLeaf(leaves, this.skeleton.leaves[i], leafScale, billboard);
+      const leaf = this.skeleton.leaves[i];
+      if (leaf.slab) {
+        this.#meshSlab(leaves, leaf, leafScale);
+      } else {
+        this.#meshLeaf(leaves, leaf, leafScale, billboard);
+      }
     }
 
     return { branches, leaves };
@@ -966,10 +971,37 @@ export class Tree extends THREE.Group {
           -this.options.leaves.sizeVariance,
         ));
 
+    // Stage C: when cloud-slab foliage is enabled, sample a per-leaf slab
+    // descriptor here (RNG consumed now, meshing stays RNG-free so LOD
+    // re-meshing is deterministic). Tilt is a small random rotation about a
+    // random horizontal axis, plus a random spin about vertical so clusters
+    // are not all aligned.
+    const slabOpts = this.options.leaves.slab;
+    let slab = null;
+    if (slabOpts && slabOpts.enabled) {
+      const tiltRad = rng.random(0, (slabOpts.tilt * Math.PI) / 180);
+      const axisAngle = rng.random(0, Math.PI * 2);
+      const axis = new THREE.Vector3(Math.cos(axisAngle), 0, Math.sin(axisAngle));
+      const spin = rng.random(0, Math.PI * 2);
+      const q = new THREE.Quaternion()
+        .setFromAxisAngle(axis, tiltRad)
+        .multiply(
+          new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spin),
+        );
+      slab = {
+        radius: slabOpts.radius * (1 + rng.random(slabOpts.radiusVariance, -slabOpts.radiusVariance)),
+        thickness: slabOpts.thickness,
+        layers: slabOpts.layers,
+        segments: slabOpts.segments,
+        tilt: new THREE.Euler().setFromQuaternion(q),
+      };
+    }
+
     this.skeleton.leaves.push({
       origin: origin.clone(),
       orientation: orientation.clone(),
       size,
+      slab,
     });
   }
 
@@ -1052,6 +1084,65 @@ export class Tree extends THREE.Group {
     createLeaf(0);
     if (billboard === Billboard.Double) {
       createLeaf(Math.PI / 2);
+    }
+  }
+
+  /**
+   * Emits flat horizontal "cloud-slab" foliage (云片叶簇) for one skeleton
+   * leaf. Each cluster is `layers` stacked horizontal discs (triangle fans)
+   * in the local XZ plane, slightly offset in Y so it reads as a layered
+   * puff rather than a single sheet. The whole cluster is tilted by a small
+   * per-leaf angle. It lives in the same leavesMesh (shared wind material)
+   * but uses uv.y = 0 on every vertex, so the wind sway leaves these large
+   * puffs essentially still — unlike the fluttering billboard leaves.
+   * @param {{verts: number[], normals: number[], uvs: number[], indices: number[]}} buffers
+   * @param {{origin: THREE.Vector3, slab: {radius: number, thickness: number, layers: number, segments: number, tilt: THREE.Euler}}} leaf
+   * @param {number} scale Size multiplier for this detail level
+   */
+  #meshSlab(buffers, leaf, scale) {
+    const { origin, slab } = leaf;
+    if (!slab) return;
+
+    const R = Math.max(0.001, slab.radius * scale);
+    const thickness = Math.max(0, slab.thickness * scale);
+    const layers = Math.max(1, slab.layers | 0);
+    const segs = Math.max(3, slab.segments | 0);
+    const tiltQ = new THREE.Quaternion().setFromEuler(slab.tilt);
+
+    // Shared up-normal of the (tilted) cluster; DoubleSide material so the
+    // underside shades correctly too.
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(tiltQ);
+
+    for (let L = 0; L < layers; L++) {
+      // Stack layers around the origin; the middle layer is widest for a
+      // puffy silhouette, outer layers taper.
+      const off = (L - (layers - 1) / 2) / Math.max(1, (layers - 1) / 2);
+      const yOff = off * thickness;
+      const layerR = R * (1 - 0.2 * Math.abs(off));
+
+      const base = buffers.verts.length / 3;
+      const center = new THREE.Vector3(0, yOff, 0).applyQuaternion(tiltQ).add(origin);
+      buffers.verts.push(center.x, center.y, center.z);
+      buffers.normals.push(up.x, up.y, up.z);
+      buffers.uvs.push(0, 0);
+
+      const ringStart = base + 1;
+      for (let j = 0; j < segs; j++) {
+        const a = (2 * Math.PI * j) / segs;
+        const v = new THREE.Vector3(Math.cos(a) * layerR, yOff, Math.sin(a) * layerR)
+          .applyQuaternion(tiltQ)
+          .add(origin);
+        buffers.verts.push(v.x, v.y, v.z);
+        buffers.normals.push(up.x, up.y, up.z);
+        buffers.uvs.push(j / segs, 0);
+      }
+
+      // Triangle fan: center + consecutive ring vertices.
+      for (let j = 0; j < segs; j++) {
+        const a = ringStart + j;
+        const b = ringStart + ((j + 1) % segs);
+        buffers.indices.push(base, a, b);
+      }
     }
   }
 

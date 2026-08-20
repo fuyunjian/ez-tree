@@ -996,6 +996,17 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     gOpt.enabled = true;
     tree.options.branch.radius[0] = 8;
     tree.options.branch.length[0] = 40;
+    // Cloud-slab foliage (云片叶簇): spread flat horizontal puffs across the
+    // upper branches so the canopy reads as an ancient cypress rather than a
+    // lollipop of billboard leaves.
+    slabOpt.enabled = true;
+    slabOpt.radius = 6;
+    slabOpt.thickness = 1.5;
+    slabOpt.layers = 3;
+    slabOpt.tilt = 12;
+    slabOpt.segments = 12;
+    tree.options.leaves.count = 3;
+    tree.options.leaves.level = 2;
     onChange();
     refreshAllControls();
   });
@@ -1227,6 +1238,48 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   });
   leavesSection.add(roundedNormalsToggle);
   controls.push({ control: roundedNormalsToggle, update: () => roundedNormalsToggle.setValue(tree.options.leaves.roundedNormals) });
+
+  // ----- Cloud Slab (云片) subsection (stage C) -----
+  const slabSubsection = createSubSection('Cloud Slab (云片)');
+  const slabOpt = tree.options.leaves.slab;
+
+  const slabEnabledToggle = createToggle('Enabled', slabOpt.enabled, (val) => {
+    slabOpt.enabled = val; onChange();
+  });
+  slabSubsection.add(slabEnabledToggle);
+  controls.push({ control: slabEnabledToggle, update: () => slabEnabledToggle.setValue(slabOpt.enabled) });
+
+  const slabRadiusSlider = createSlider('Radius', slabOpt.radius, 1, 20, 0.5, (val) => {
+    slabOpt.radius = val; onChange();
+  });
+  slabSubsection.add(slabRadiusSlider);
+  controls.push({ control: slabRadiusSlider, update: () => slabRadiusSlider.setValue(slabOpt.radius) });
+
+  const slabThicknessSlider = createSlider('Thickness', slabOpt.thickness, 0.2, 5, 0.1, (val) => {
+    slabOpt.thickness = val; onChange();
+  });
+  slabSubsection.add(slabThicknessSlider);
+  controls.push({ control: slabThicknessSlider, update: () => slabThicknessSlider.setValue(slabOpt.thickness) });
+
+  const slabLayersSlider = createSlider('Layers', slabOpt.layers, 1, 5, 1, (val) => {
+    slabOpt.layers = val; onChange();
+  });
+  slabSubsection.add(slabLayersSlider);
+  controls.push({ control: slabLayersSlider, update: () => slabLayersSlider.setValue(slabOpt.layers) });
+
+  const slabTiltSlider = createSlider('Tilt (°)', slabOpt.tilt, 0, 40, 1, (val) => {
+    slabOpt.tilt = val; onChange();
+  });
+  slabSubsection.add(slabTiltSlider);
+  controls.push({ control: slabTiltSlider, update: () => slabTiltSlider.setValue(slabOpt.tilt) });
+
+  const slabSegmentsSlider = createSlider('Segments', slabOpt.segments, 6, 20, 1, (val) => {
+    slabOpt.segments = val; onChange();
+  });
+  slabSubsection.add(slabSegmentsSlider);
+  controls.push({ control: slabSegmentsSlider, update: () => slabSegmentsSlider.setValue(slabOpt.segments) });
+
+  leavesSection.add(slabSubsection);
 
   parametersTab.appendChild(leavesSection.element);
 
