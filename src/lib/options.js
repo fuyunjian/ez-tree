@@ -241,6 +241,26 @@ export default class TreeOptions {
         rootDepth: 2, // how deep roots dive below ground (world units)
         rootWidth: 0.6, // root base width as a fraction of the trunk base radius
       },
+
+      // Stage D: deadwood (枯枝与空洞). Hollows and cracks affect the trunk
+      // (level 0) only, carving a localized inward dent and vertical fissures
+      // into the bark. deadBranchChance applies to ALL non-trunk child
+      // branches: a branch that rolls "dead" grows shorter, thinner, more
+      // twisted, and carries no leaves or children — a bare snapped twig.
+      // Disabled by default so legacy trees are untouched.
+      deadwood: {
+        enabled: false,
+        hollowStrength: 0.5, // depth of the hollow (fraction of radius, 0..1)
+        hollowHeight: 0.3, // normalized trunk height (0..1) of the hollow center
+        hollowWidth: 0.25, // angular half-width of the hollow (radians)
+        hollowPhase: 0, // angular position of the hollow (radians)
+        crackCount: 0, // number of vertical cracks (0 = none)
+        crackDepth: 0.15, // crack depth (fraction of radius, 0..0.5)
+        crackWidth: 0.06, // angular half-width of each crack (radians)
+        crackPhase: 0, // angular offset of the crack pattern (radians)
+        deadBranchChance: 0, // probability a child branch is dead (0..1)
+        deadBranchLength: 0.6, // length multiplier for dead branches (shorter = snapped)
+      },
     };
 
     // Global pose (stage E). Applied per-section, scaled by the section's

@@ -995,6 +995,78 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   trunkSection.add(buttSubsection);
 
+  // ----- Deadwood (枯枝/空洞) subsection (stage D) -----
+  const dwSubsection = createSubSection('Deadwood (枯枝/空洞)');
+  const dwOpt = trunkOpt.deadwood;
+
+  const dwEnabledToggle = createToggle('Enabled', dwOpt.enabled, (val) => {
+    dwOpt.enabled = val; onChange();
+  });
+  dwSubsection.add(dwEnabledToggle);
+  controls.push({ control: dwEnabledToggle, update: () => dwEnabledToggle.setValue(dwOpt.enabled) });
+
+  const dwHollowStrengthSlider = createSlider('Hollow Strength', dwOpt.hollowStrength, 0, 1, 0.01, (val) => {
+    dwOpt.hollowStrength = val; onChange();
+  });
+  dwSubsection.add(dwHollowStrengthSlider);
+  controls.push({ control: dwHollowStrengthSlider, update: () => dwHollowStrengthSlider.setValue(dwOpt.hollowStrength) });
+
+  const dwHollowHeightSlider = createSlider('Hollow Height', dwOpt.hollowHeight, 0.05, 0.9, 0.01, (val) => {
+    dwOpt.hollowHeight = val; onChange();
+  });
+  dwSubsection.add(dwHollowHeightSlider);
+  controls.push({ control: dwHollowHeightSlider, update: () => dwHollowHeightSlider.setValue(dwOpt.hollowHeight) });
+
+  const dwHollowWidthSlider = createSlider('Hollow Width', dwOpt.hollowWidth, 0.05, 1, 0.01, (val) => {
+    dwOpt.hollowWidth = val; onChange();
+  });
+  dwSubsection.add(dwHollowWidthSlider);
+  controls.push({ control: dwHollowWidthSlider, update: () => dwHollowWidthSlider.setValue(dwOpt.hollowWidth) });
+
+  const dwHollowPhaseSlider = createSlider('Hollow Phase', dwOpt.hollowPhase, 0, Math.PI * 2, 0.01, (val) => {
+    dwOpt.hollowPhase = val; onChange();
+  });
+  dwSubsection.add(dwHollowPhaseSlider);
+  controls.push({ control: dwHollowPhaseSlider, update: () => dwHollowPhaseSlider.setValue(dwOpt.hollowPhase) });
+
+  const dwCrackCountSlider = createSlider('Crack Count', dwOpt.crackCount, 0, 12, 1, (val) => {
+    dwOpt.crackCount = val; onChange();
+  });
+  dwSubsection.add(dwCrackCountSlider);
+  controls.push({ control: dwCrackCountSlider, update: () => dwCrackCountSlider.setValue(dwOpt.crackCount) });
+
+  const dwCrackDepthSlider = createSlider('Crack Depth', dwOpt.crackDepth, 0, 0.5, 0.01, (val) => {
+    dwOpt.crackDepth = val; onChange();
+  });
+  dwSubsection.add(dwCrackDepthSlider);
+  controls.push({ control: dwCrackDepthSlider, update: () => dwCrackDepthSlider.setValue(dwOpt.crackDepth) });
+
+  const dwCrackWidthSlider = createSlider('Crack Width', dwOpt.crackWidth, 0.01, 0.3, 0.01, (val) => {
+    dwOpt.crackWidth = val; onChange();
+  });
+  dwSubsection.add(dwCrackWidthSlider);
+  controls.push({ control: dwCrackWidthSlider, update: () => dwCrackWidthSlider.setValue(dwOpt.crackWidth) });
+
+  const dwCrackPhaseSlider = createSlider('Crack Phase', dwOpt.crackPhase, 0, Math.PI * 2, 0.01, (val) => {
+    dwOpt.crackPhase = val; onChange();
+  });
+  dwSubsection.add(dwCrackPhaseSlider);
+  controls.push({ control: dwCrackPhaseSlider, update: () => dwCrackPhaseSlider.setValue(dwOpt.crackPhase) });
+
+  const dwDeadChanceSlider = createSlider('Dead Branch Chance', dwOpt.deadBranchChance, 0, 1, 0.01, (val) => {
+    dwOpt.deadBranchChance = val; onChange();
+  });
+  dwSubsection.add(dwDeadChanceSlider);
+  controls.push({ control: dwDeadChanceSlider, update: () => dwDeadChanceSlider.setValue(dwOpt.deadBranchChance) });
+
+  const dwDeadLenSlider = createSlider('Dead Branch Length', dwOpt.deadBranchLength, 0.2, 1, 0.01, (val) => {
+    dwOpt.deadBranchLength = val; onChange();
+  });
+  dwSubsection.add(dwDeadLenSlider);
+  controls.push({ control: dwDeadLenSlider, update: () => dwDeadLenSlider.setValue(dwOpt.deadBranchLength) });
+
+  trunkSection.add(dwSubsection);
+
   parametersTab.appendChild(trunkSection.element);
 
   // ----- Global Pose Section (stage E) -----
@@ -1060,6 +1132,19 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     trunkOpt.buttress.rootWidth = 0.7;
     // More radial segments so the flutes read as smooth ridges, not facets.
     tree.options.branch.segments[0] = 12;
+    // Stage D: deadwood — a hollow + vertical cracks + some dead branches
+    // for the weathered, ancient look.
+    trunkOpt.deadwood.enabled = true;
+    trunkOpt.deadwood.hollowStrength = 0.35;
+    trunkOpt.deadwood.hollowHeight = 0.25;
+    trunkOpt.deadwood.hollowWidth = 0.3;
+    trunkOpt.deadwood.hollowPhase = 2.1;
+    trunkOpt.deadwood.crackCount = 4;
+    trunkOpt.deadwood.crackDepth = 0.12;
+    trunkOpt.deadwood.crackWidth = 0.05;
+    trunkOpt.deadwood.crackPhase = 0.5;
+    trunkOpt.deadwood.deadBranchChance = 0.15;
+    trunkOpt.deadwood.deadBranchLength = 0.55;
     gOpt.lean.x = 0.008;
     gOpt.lean.z = 0.005;
     gOpt.twist = 0.008;

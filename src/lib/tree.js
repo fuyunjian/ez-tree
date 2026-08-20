@@ -323,6 +323,13 @@ export class Tree extends THREE.Group {
     return (h / 4294967295) * 2 - 1;
   }
 
+  /** Shortest absolute angular distance between two angles (radians). */
+  #angleDelta(a, b) {
+    let d = (((a - b) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    return Math.abs(d);
+  }
+
   /** Returns the override object for a branch, or null. */
   #ov(branch) {
     const ov = this.options.branch.overrides;
@@ -555,6 +562,13 @@ export class Tree extends THREE.Group {
       ? trunkOpt.buttress
       : null;
 
+    // Stage D: deadwood (hollow/cracks on trunk, dead branches on children).
+    // Hollows/cracks are trunk-only; deadBranchChance is read in
+    // generateChildBranches via a dedicated RNG (never perturbs the main stream).
+    const dw = (useTrunk && trunkOpt.deadwood && trunkOpt.deadwood.enabled)
+      ? trunkOpt.deadwood
+      : null;
+
     const taper = this.#branchParam(branch, 'taper', this.options.branch.taper[branch.level]);
     const twist = this.#branchParam(branch, 'twist', this.options.branch.twist[branch.level]);
     const ovForce = this.#ov(branch)?.force;
@@ -598,6 +612,11 @@ export class Tree extends THREE.Group {
         sectionRadius *= scale;
       }
 
+      // Stage D: dead branches are thinner (emaciated twig look)
+      if (branch.dead) {
+        sectionRadius *= 0.6;
+      }
+
       // Apply trunk sculpt + global pose to the *displayed* section only.
       // sectionOrientation stays the local (un-posed) orientation so the
       // per-section perturbation below never double-counts the pose.
@@ -635,7 +654,8 @@ export class Tree extends THREE.Group {
       // gnarliness, the larger potential perturbation
       const gnarliness =
         Math.max(1, 1 / Math.sqrt(sectionRadius)) *
-        this.#branchParam(branch, 'gnarliness', this.options.branch.gnarliness[branch.level]);
+        this.#branchParam(branch, 'gnarliness', this.options.branch.gnarliness[branch.level]) *
+        (branch.dead ? 2 : 1);
 
       sectionOrientation.x += rng.random(gnarliness, -gnarliness);
       sectionOrientation.z += rng.random(gnarliness, -gnarliness);
@@ -724,6 +744,14 @@ export class Tree extends THREE.Group {
       buttress: butt
         ? { flutes: butt.flutes, strength: butt.strength, phase: butt.phase, height: butt.height }
         : null,
+      // Stage D: carry deadwood params so #meshBranch can carve hollows/cracks
+      // (LOD-safe, like buttress). Null for non-trunk branches.
+      deadwood: dw ? {
+        hollowStrength: dw.hollowStrength, hollowHeight: dw.hollowHeight,
+        hollowWidth: dw.hollowWidth, hollowPhase: dw.hollowPhase,
+        crackCount: dw.crackCount, crackDepth: dw.crackDepth,
+        crackWidth: dw.crackWidth, crackPhase: dw.crackPhase,
+      } : null,
     });
 
     // Stage B: sprout exposed root fingers from the trunk base. Runs only for
@@ -734,8 +762,8 @@ export class Tree extends THREE.Group {
     }
 
     // Deciduous trees have a terminal branch that grows out of the
-    // end of the parent branch
-    if (this.options.type === 'deciduous') {
+    // end of the parent branch. Dead branches don't grow terminal branches.
+    if (this.options.type === 'deciduous' && !branch.dead) {
       const lastSection = sections[sections.length - 1];
 
       if (branch.level < this.options.branch.levels) {
@@ -761,6 +789,11 @@ export class Tree extends THREE.Group {
       } else {
         this.#recordLeaf(lastSection.origin, lastSection.orientation, rng);
       }
+    }
+
+    // Dead branches: bare snapped twig — no children, no leaves.
+    if (branch.dead) {
+      return;
     }
 
     // If we are on the last branch level, generate leaves
@@ -882,19 +915,33 @@ export class Tree extends THREE.Group {
           ? 1.0 - childBranchStart
           : 1.0);
 
-      this.branchQueue.push(
-        new Branch(
-          childBranchOrigin,
-          childBranchOrientation,
-          childBranchLength,
-          childBranchRadius,
-          level,
-          childOv.sections ?? this.options.branch.sections[level],
-          childOv.segments ?? this.options.branch.segments[level],
-          childPath,
-          usePerBranch ? childRng : null,
-        ),
+      // Stage D: dead branch roll. Uses a dedicated deterministic RNG keyed
+      // by the child's path so it never perturbs the main generation stream.
+      // Dead branches are shorter (snapped), thinner, more twisted, and
+      // carry no leaves or children — a bare twig.
+      const dwOpts = this.options.trunk.deadwood;
+      let isDead = false;
+      if (dwOpts && dwOpts.enabled && dwOpts.deadBranchChance > 0 && level > 0) {
+        const deadRng = this.#makeRng(childPath + ':dead');
+        isDead = deadRng.random() < dwOpts.deadBranchChance;
+      }
+      if (isDead) {
+        childBranchLength *= (dwOpts.deadBranchLength ?? 0.6);
+      }
+
+      const childBranch = new Branch(
+        childBranchOrigin,
+        childBranchOrientation,
+        childBranchLength,
+        childBranchRadius,
+        level,
+        childOv.sections ?? this.options.branch.sections[level],
+        childOv.segments ?? this.options.branch.segments[level],
+        childPath,
+        usePerBranch ? childRng : null,
       );
+      if (isDead) childBranch.dead = true;
+      this.branchQueue.push(childBranch);
     }
   }
 
@@ -1296,15 +1343,45 @@ export class Tree extends THREE.Group {
         ? 1 - section.t / butt.height
         : 0;
 
+      // Stage D: deadwood (hollow + cracks) — trunk only.
+      const dw = skeletonBranch.deadwood;
+
       // Create the segments that make up this section.
       let first;
       for (let j = 0; j < segments; j++) {
         let angle = (2.0 * Math.PI * j) / segments;
 
-        // Effective radius after the buttress flute modulation.
-        const rEff = buttFade > 0
+        // Effective radius after buttress flute + deadwood modulation.
+        let rEff = buttFade > 0
           ? section.radius * (1 + butt.strength * buttFade * Math.cos(butt.flutes * angle - butt.phase))
           : section.radius;
+
+        // Stage D: hollow (localized inward dent) + cracks (narrow vertical grooves).
+        // Both are Gaussian falloffs in angle so they are LOD-safe (independent
+        // of segment count, consistent across detail levels).
+        if (dw) {
+          const st = section.t ?? 0;
+          // Hollow: dent centered at hollowPhase/hollowHeight, fading in both
+          // angle and height. The 0.15 constant controls the vertical spread.
+          const angDistH = this.#angleDelta(angle, dw.hollowPhase);
+          const hollowAF = Math.exp(-Math.pow(angDistH / dw.hollowWidth, 2));
+          const hDist = Math.abs(st - dw.hollowHeight);
+          const hollowHF = Math.exp(-Math.pow(hDist / 0.15, 2));
+          rEff *= 1 - dw.hollowStrength * hollowAF * hollowHF;
+
+          // Cracks: narrow grooves evenly distributed around the trunk,
+          // offset by crackPhase. Fade out near the top so cracks read as
+          // weathered fissures, not through-holes.
+          if (dw.crackCount > 0) {
+            const crackFade = st < 0.85 ? 1 : Math.max(0, 1 - (st - 0.85) / 0.15);
+            for (let c = 0; c < dw.crackCount; c++) {
+              const crackAngle = dw.crackPhase + (c * 2 * Math.PI / dw.crackCount);
+              const crackDist = this.#angleDelta(angle, crackAngle);
+              const crackF = Math.exp(-Math.pow(crackDist / dw.crackWidth, 2));
+              rEff *= 1 - dw.crackDepth * crackF * crackFade;
+            }
+          }
+        }
 
         // Create the segment vertex
         const vertex = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle))
