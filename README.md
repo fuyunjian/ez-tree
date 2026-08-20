@@ -13,6 +13,8 @@
 # About
 EZ-Tree is a procedural tree generator with dozens of tunable parameters. The standalone tree generation code is published as a library and can be imported into your own application for dynamically generating trees on demand. Additionally, there is a standalone web app which allows you to create trees within the browser and export as .PNG or .GLB files.
 
+> 📖 中文用户请参阅《[使用手册](./使用手册.md)》（含本地启动、面板详解、古柏预设、单枝编辑与导出说明）。
+
 # App
 https://eztree.dev
 
