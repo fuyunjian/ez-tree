@@ -935,6 +935,66 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   trunkSection.add(trunkEnabledToggle);
   controls.push({ control: trunkEnabledToggle, update: () => trunkEnabledToggle.setValue(trunkOpt.enabled) });
 
+  // ----- Buttress / Roots (板根) subsection (stage B) -----
+  const buttSubsection = createSubSection('Buttress / Roots (板根)');
+  const buttOpt = trunkOpt.buttress;
+
+  const buttEnabledToggle = createToggle('Enabled', buttOpt.enabled, (val) => {
+    buttOpt.enabled = val; onChange();
+  });
+  buttSubsection.add(buttEnabledToggle);
+  controls.push({ control: buttEnabledToggle, update: () => buttEnabledToggle.setValue(buttOpt.enabled) });
+
+  const buttFlutesSlider = createSlider('Flutes', buttOpt.flutes, 0, 12, 1, (val) => {
+    buttOpt.flutes = val; onChange();
+  });
+  buttSubsection.add(buttFlutesSlider);
+  controls.push({ control: buttFlutesSlider, update: () => buttFlutesSlider.setValue(buttOpt.flutes) });
+
+  const buttStrengthSlider = createSlider('Flute Strength', buttOpt.strength, 0, 1, 0.01, (val) => {
+    buttOpt.strength = val; onChange();
+  });
+  buttSubsection.add(buttStrengthSlider);
+  controls.push({ control: buttStrengthSlider, update: () => buttStrengthSlider.setValue(buttOpt.strength) });
+
+  const buttHeightSlider = createSlider('Flute Height', buttOpt.height, 0.05, 1, 0.01, (val) => {
+    buttOpt.height = val; onChange();
+  });
+  buttSubsection.add(buttHeightSlider);
+  controls.push({ control: buttHeightSlider, update: () => buttHeightSlider.setValue(buttOpt.height) });
+
+  const buttPhaseSlider = createSlider('Flute Phase', buttOpt.phase, 0, Math.PI * 2, 0.01, (val) => {
+    buttOpt.phase = val; onChange();
+  });
+  buttSubsection.add(buttPhaseSlider);
+  controls.push({ control: buttPhaseSlider, update: () => buttPhaseSlider.setValue(buttOpt.phase) });
+
+  const buttRootsSlider = createSlider('Roots', buttOpt.roots, 0, 16, 1, (val) => {
+    buttOpt.roots = val; onChange();
+  });
+  buttSubsection.add(buttRootsSlider);
+  controls.push({ control: buttRootsSlider, update: () => buttRootsSlider.setValue(buttOpt.roots) });
+
+  const buttRootLenSlider = createSlider('Root Length', buttOpt.rootLength, 1, 20, 0.5, (val) => {
+    buttOpt.rootLength = val; onChange();
+  });
+  buttSubsection.add(buttRootLenSlider);
+  controls.push({ control: buttRootLenSlider, update: () => buttRootLenSlider.setValue(buttOpt.rootLength) });
+
+  const buttRootDepthSlider = createSlider('Root Depth', buttOpt.rootDepth, 0, 8, 0.1, (val) => {
+    buttOpt.rootDepth = val; onChange();
+  });
+  buttSubsection.add(buttRootDepthSlider);
+  controls.push({ control: buttRootDepthSlider, update: () => buttRootDepthSlider.setValue(buttOpt.rootDepth) });
+
+  const buttRootWidthSlider = createSlider('Root Width', buttOpt.rootWidth, 0.1, 1, 0.01, (val) => {
+    buttOpt.rootWidth = val; onChange();
+  });
+  buttSubsection.add(buttRootWidthSlider);
+  controls.push({ control: buttRootWidthSlider, update: () => buttRootWidthSlider.setValue(buttOpt.rootWidth) });
+
+  trunkSection.add(buttSubsection);
+
   parametersTab.appendChild(trunkSection.element);
 
   // ----- Global Pose Section (stage E) -----
@@ -988,6 +1048,18 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     trunkOpt.twist = 0.25;
     trunkOpt.noise = 0.8;
     trunkOpt.enabled = true;
+    // Stage B: buttress roots — fluted base + a few exposed root fingers.
+    trunkOpt.buttress.enabled = true;
+    trunkOpt.buttress.flutes = 6;
+    trunkOpt.buttress.strength = 0.4;
+    trunkOpt.buttress.height = 0.28;
+    trunkOpt.buttress.phase = 0.3;
+    trunkOpt.buttress.roots = 7;
+    trunkOpt.buttress.rootLength = 7;
+    trunkOpt.buttress.rootDepth = 2.2;
+    trunkOpt.buttress.rootWidth = 0.7;
+    // More radial segments so the flutes read as smooth ridges, not facets.
+    tree.options.branch.segments[0] = 12;
     gOpt.lean.x = 0.008;
     gOpt.lean.z = 0.005;
     gOpt.twist = 0.008;

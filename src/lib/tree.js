@@ -549,6 +549,12 @@ export class Tree extends THREE.Group {
     const useTrunk = !!(trunkOpt && trunkOpt.enabled && branch.level === 0);
     const gOpt = this.options.global;
 
+    // Stage B: buttress roots (板根/外露根系). Gated by the trunk's own
+    // sub-enabled flag so stage A alone doesn't pull in stage B.
+    const butt = (useTrunk && trunkOpt.buttress && trunkOpt.buttress.enabled)
+      ? trunkOpt.buttress
+      : null;
+
     const taper = this.#branchParam(branch, 'taper', this.options.branch.taper[branch.level]);
     const twist = this.#branchParam(branch, 'twist', this.options.branch.twist[branch.level]);
     const ovForce = this.#ov(branch)?.force;
@@ -603,6 +609,10 @@ export class Tree extends THREE.Group {
         origin: sectionOrigin.clone(),
         orientation: sectionPose.clone(),
         radius: sectionRadius,
+        // Normalized height (0..1) within this branch, used by stage B buttress
+        // flutes to fade the ridges out with height (kept on every section so
+        // meshing stays LOD-safe regardless of how many rings are sampled).
+        t: tNorm,
       });
 
       sectionOrigin.add(
@@ -708,7 +718,20 @@ export class Tree extends THREE.Group {
       path: branch.path,
       level: branch.level,
       length: branchLength,
+      // Stage B: carry the buttress flute parameters so #meshBranch can
+      // modulate each vertex's radius by angle (LOD-safe). Null for every
+      // non-trunk branch.
+      buttress: butt
+        ? { flutes: butt.flutes, strength: butt.strength, phase: butt.phase, height: butt.height }
+        : null,
     });
+
+    // Stage B: sprout exposed root fingers from the trunk base. Runs only for
+    // the trunk and only when roots > 0. Uses a dedicated RNG so it never
+    // perturbs the main generation stream.
+    if (butt && butt.roots > 0) {
+      this.#generateRoots(sections, butt);
+    }
 
     // Deciduous trees have a terminal branch that grows out of the
     // end of the parent branch
@@ -952,6 +975,65 @@ export class Tree extends THREE.Group {
       );
 
       this.#recordLeaf(leafOrigin, leafOrientation, rng);
+    }
+  }
+
+  /**
+   * Stage B: sprouts tapering root fingers from the base of the trunk.
+   * Each root radiates outward and dives downward, fading to a fine tip.
+   * Placement and per-root jitter are drawn from a DEDICATED deterministic
+   * RNG keyed by the trunk path, so enabling roots never perturbs the main
+   * generation stream or the rest of the tree's shape. The roots are pushed
+   * straight into skeleton.branches, so they reuse #meshBranch and the bark
+   * material, and are even pickable like any other branch.
+   * @param {{origin: THREE.Vector3, orientation: THREE.Euler, radius: number, t: number}[]} sections
+   * @param {object} butt this.options.trunk.buttress
+   */
+  #generateRoots(sections, butt) {
+    const base = sections[0];
+    if (!base) return;
+    const rrng = this.#makeRng(base.path + ':buttress-roots');
+    const count = Math.max(0, Math.round(butt.roots));
+    if (count <= 0) return;
+
+    const phase0 = rrng.random() * Math.PI * 2;
+    const baseR = base.radius;
+
+    for (let k = 0; k < count; k++) {
+      const theta = phase0 + (k * 2 * Math.PI) / count + rrng.random(-0.25, 0.25);
+      const outDir = new THREE.Vector3(Math.cos(theta), 0, Math.sin(theta));
+      const startR = baseR * (butt.rootWidth ?? 0.6) * rrng.random(0.7, 1.05);
+      const length = butt.rootLength * rrng.random(0.8, 1.25);
+      const depth = butt.rootDepth * rrng.random(0.6, 1.1);
+
+      // Emerge from just outside the trunk base, at/above the ground plane.
+      const start = base.origin.clone().add(outDir.clone().multiplyScalar(startR));
+      start.y = Math.max(start.y, 0.05);
+
+      // Grow outward then downward; keep the cross-sections perpendicular to
+      // the root axis so it reads as a root, not a tilted cylinder.
+      const dir = new THREE.Vector3().copy(outDir).multiplyScalar(length);
+      dir.y -= depth;
+      dir.normalize();
+      const end = start.clone().add(dir.clone().multiplyScalar(length));
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      const e = new THREE.Euler().setFromQuaternion(q);
+      const mid = start.clone().lerp(end, 0.5).add(new THREE.Vector3(0, startR * 0.15, 0));
+
+      const segs = [
+        { origin: start.clone(), orientation: e.clone(), radius: startR },
+        { origin: mid, orientation: e.clone(), radius: startR * 0.45 },
+        { origin: end.clone(), orientation: e.clone(), radius: startR * 0.12 },
+      ];
+
+      this.skeleton.branches.push({
+        sections: segs,
+        segmentCount: 6,
+        baseRadius: startR,
+        path: base.path + '.root' + k,
+        level: 0,
+        length: end.distanceTo(start),
+      });
     }
   }
 
@@ -1205,14 +1287,28 @@ export class Tree extends THREE.Group {
     for (let k = 0; k < sampled.length; k++) {
       const section = sampled[k];
 
+      // Stage B buttress flutes: a radial ridge profile carved into the lower
+      // trunk. Computed per-vertex from the section's own angle so it is
+      // independent of the radial segment count (LOD-safe) and consistent
+      // across detail levels. Fades to 1 (no ridge) by buttress.height.
+      const butt = skeletonBranch.buttress;
+      const buttFade = (butt && section.t != null && section.t <= butt.height)
+        ? 1 - section.t / butt.height
+        : 0;
+
       // Create the segments that make up this section.
       let first;
       for (let j = 0; j < segments; j++) {
         let angle = (2.0 * Math.PI * j) / segments;
 
+        // Effective radius after the buttress flute modulation.
+        const rEff = buttFade > 0
+          ? section.radius * (1 + butt.strength * buttFade * Math.cos(butt.flutes * angle - butt.phase))
+          : section.radius;
+
         // Create the segment vertex
         const vertex = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle))
-          .multiplyScalar(section.radius)
+          .multiplyScalar(rEff)
           .applyEuler(section.orientation)
           .add(section.origin);
 

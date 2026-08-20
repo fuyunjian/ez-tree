@@ -222,6 +222,25 @@ export default class TreeOptions {
       bowDirection: 0, // direction of the bow in radians (0 = +X)
       twist: 0, // trunk twist in radians across the full trunk height
       noise: 0, // surface noise strength (vertical furrows / bumps)
+
+      // Stage B: buttress roots / exposed root system (板根/外露根系).
+      // Affects level-0 (trunk) base only. `flutes` carves N radial ridges
+      // into the lower trunk (the classic 板根 flare); `roots` sprouts
+      // tapering root fingers that radiate outward and dive downward from the
+      // base (外露根系). Both fade with height so the effect stays at the foot
+      // of the tree. Disabled by default (roots: 0) so legacy trees are
+      // untouched.
+      buttress: {
+        enabled: false, // master switch for stage B
+        flutes: 5, // number of radial buttress ridges around the trunk
+        strength: 0.35, // ridge depth (0..1 of the base radius)
+        height: 0.3, // fraction of trunk height the ridges extend up
+        phase: 0, // angular offset of the ridges (radians)
+        roots: 0, // number of exposed root fingers (0 = none)
+        rootLength: 6, // how far roots spread along the ground (world units)
+        rootDepth: 2, // how deep roots dive below ground (world units)
+        rootWidth: 0.6, // root base width as a fraction of the trunk base radius
+      },
     };
 
     // Global pose (stage E). Applied per-section, scaled by the section's
