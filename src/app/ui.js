@@ -444,6 +444,13 @@ function createSubSection(title, expanded = false) {
 
 let controls = [];
 
+// Index of the branch currently being edited individually (null = none).
+// Declared early so every handler closure can read/write it.
+let selectedIndex = null;
+// Forward declaration; the real implementation is assigned after the
+// Selected Branch section is built. Returns nothing.
+let selectBranch = () => {};
+
 /**
  * Setups the UI
  * @param {Tree} tree
@@ -619,6 +626,13 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
         o.material.needsUpdate = true;
       }
     });
+    // Keep the picked-branch highlight in sync after regeneration. If the
+    // branch count changed (e.g. levels/children edited), an out-of-range
+    // index auto-clears the highlight.
+    if (selectedIndex != null) {
+      tree.setSelectedBranch(selectedIndex);
+    }
+
     // Update info displays
     updateInfoDisplays();
   };
@@ -634,6 +648,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       if (previewLevel > 0) {
         applyLODPreview();
       }
+      selectBranch(null);
       refreshAllControls();
     }
   );
@@ -720,6 +735,13 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(levelsSlider);
   controls.push({ control: levelsSlider, update: () => levelsSlider.setValue(tree.options.branch.levels) });
 
+  const rngModeSelect = createSelect('RNG Mode', { 'Per Branch': 'perBranch', 'Shared (legacy)': 'shared' }, tree.options.rngMode, (val) => {
+    tree.options.rngMode = val;
+    onChange();
+  });
+  branchSection.add(rngModeSelect);
+  controls.push({ control: rngModeSelect, update: () => rngModeSelect.setValue(tree.options.rngMode) });
+
   // Angle subsection
   const angleSubsection = createSubSection('Angle');
   for (let i = 1; i <= 3; i++) {
@@ -734,7 +756,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   // Children subsection
   const childrenSubsection = createSubSection('Children');
-  const childrenRanges = [[0, 100], [1, 10], [2, 5]];
+  const childrenRanges = [[0, 100], [1, 25], [2, 20]];
   childrenRanges.forEach(([level, max]) => {
     const slider = createSlider(`Level ${level}`, tree.options.branch.children[level], 0, max, 1, (val) => {
       tree.options.branch.children[level] = val;
@@ -748,7 +770,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Gnarliness subsection
   const gnarlinessSubsection = createSubSection('Gnarliness');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.gnarliness[i], -0.5, 0.5, 0.01, (val) => {
+    const slider = createSlider(`Level ${i}`, tree.options.branch.gnarliness[i], -1, 1, 0.01, (val) => {
       tree.options.branch.gnarliness[i] = val;
       onChange();
     });
@@ -778,7 +800,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Length subsection
   const lengthSubsection = createSubSection('Length');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.length[i], 0.1, 100, 0.1, (val) => {
+    const slider = createSlider(`Level ${i}`, tree.options.branch.length[i], 0.1, 500, 0.1, (val) => {
       tree.options.branch.length[i] = val;
       onChange();
     });
@@ -790,7 +812,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Radius subsection
   const radiusSubsection = createSubSection('Radius');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.radius[i], 0.1, 5, 0.01, (val) => {
+    const slider = createSlider(`Level ${i}`, tree.options.branch.radius[i], 0.1, 50, 0.01, (val) => {
       tree.options.branch.radius[i] = val;
       onChange();
     });
@@ -802,7 +824,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Sections subsection
   const sectionsSubsection = createSubSection('Sections');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.sections[i], 1, 20, 1, (val) => {
+    const slider = createSlider(`Level ${i}`, tree.options.branch.sections[i], 1, 40, 1, (val) => {
       tree.options.branch.sections[i] = val;
       onChange();
     });
@@ -861,6 +883,141 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   parametersTab.appendChild(branchSection.element);
 
+  // ----- Selected Branch Section (per-branch editing) -----
+  const selectedSection = createSection('Selected Branch', 'share', false);
+  const selectedContent = selectedSection.content;
+
+  function clearSelectedControls() {
+    selectedContent.innerHTML = '';
+  }
+
+  /**
+   * (Re)builds the per-branch editor for the given skeleton branch index.
+   * null clears the selection.
+   */
+  function buildSelectedBranchPanel(index) {
+    selectedIndex = index;
+    clearSelectedControls();
+    tree.setSelectedBranch(index);
+
+    if (index == null) {
+      const hint = document.createElement('div');
+      hint.className = 'control-row';
+      hint.style.opacity = '0.7';
+      hint.textContent = 'Click a branch in the scene to edit it individually.';
+      selectedContent.appendChild(hint);
+      return;
+    }
+
+    const info = tree.getBranchInfo(index);
+    if (!info) {
+      const hint = document.createElement('div');
+      hint.className = 'control-row';
+      hint.textContent = 'Branch not found.';
+      selectedContent.appendChild(hint);
+      return;
+    }
+
+    const pathDisplay = createDisplay('Path', info.path);
+    selectedContent.appendChild(pathDisplay.element);
+
+    const makeOverrideSlider = (label, key, value, min, max, step) => {
+      const slider = createSlider(label, value, min, max, step, (val) => {
+        tree.setBranchOverride(info.path, key, val);
+        onChange();
+      });
+      selectedContent.appendChild(slider.element);
+      return slider;
+    };
+
+    makeOverrideSlider('Length', 'length', info.length, 0.1, 500, 0.1);
+    makeOverrideSlider('Radius', 'radius', info.radius, 0.05, 50, 0.05);
+    makeOverrideSlider('Angle', 'angle', info.angle, 0, 180, 1);
+    makeOverrideSlider('Children', 'children', info.children, 0, 50, 1);
+    makeOverrideSlider('Gnarliness', 'gnarliness', info.gnarliness, -1, 1, 0.01);
+    makeOverrideSlider('Taper', 'taper', info.taper, 0, 1, 0.01);
+    makeOverrideSlider('Twist', 'twist', info.twist, -1, 1, 0.01);
+    makeOverrideSlider('Sections', 'sections', info.sections, 1, 40, 1);
+    makeOverrideSlider('Start', 'start', info.start, 0, 1, 0.01);
+
+    // ----- Curve (bend) control points -----
+    const curveHeader = document.createElement('div');
+    curveHeader.className = 'control-row';
+    curveHeader.style.fontWeight = '600';
+    curveHeader.textContent = 'Bend Points';
+    selectedContent.appendChild(curveHeader);
+
+    const curvePoints = (tree.options.branch.overrides[info.path]?.curve) || [];
+    const rebuildCurve = () => buildSelectedBranchPanel(selectedIndex);
+
+    curvePoints.forEach((cp, ci) => {
+      const tSlider = createSlider(
+        `#${ci} position`,
+        cp.t ?? 0.5, 0, 1, 0.01,
+        (val) => { cp.t = val; tree.setBranchOverride(info.path, 'curve', curvePoints); onChange(); },
+      );
+      selectedContent.appendChild(tSlider.element);
+
+      ['x', 'y', 'z'].forEach((axis) => {
+        const dSlider = createSlider(
+          `#${ci} dir ${axis.toUpperCase()}`,
+          cp.dir?.[axis] ?? 0, -1, 1, 0.01,
+          (val) => {
+            if (!cp.dir) cp.dir = { x: 0, y: 0, z: 0 };
+            cp.dir[axis] = val;
+            tree.setBranchOverride(info.path, 'curve', curvePoints);
+            onChange();
+          },
+        );
+        selectedContent.appendChild(dSlider.element);
+      });
+
+      const sSlider = createSlider(
+        `#${ci} strength`,
+        cp.strength ?? 0.5, 0, 2, 0.01,
+        (val) => { cp.strength = val; tree.setBranchOverride(info.path, 'curve', curvePoints); onChange(); },
+      );
+      selectedContent.appendChild(sSlider.element);
+
+      const rmBtn = createButton('Remove Point', 'folderOpen', () => {
+        curvePoints.splice(ci, 1);
+        tree.setBranchOverride(info.path, 'curve', curvePoints);
+        onChange();
+        rebuildCurve();
+      });
+      selectedContent.appendChild(rmBtn.element);
+    });
+
+    const addBtn = createButton('Add Bend Point', 'share', () => {
+      curvePoints.push({ t: 0.5, dir: { x: 0, y: 0, z: 1 }, strength: 0.5 });
+      tree.setBranchOverride(info.path, 'curve', curvePoints);
+      onChange();
+      rebuildCurve();
+    });
+    selectedContent.appendChild(addBtn.element);
+
+    const clearBtn = createButton('Clear Override', 'folderOpen', () => {
+      if (tree.options.branch.overrides[info.path]) {
+        delete tree.options.branch.overrides[info.path];
+      }
+      onChange();
+      rebuildCurve();
+    });
+    selectedContent.appendChild(clearBtn.element);
+
+    selectedSection.setExpanded(true);
+  }
+
+  // Real implementation used by the scene raycaster (via the returned API)
+  // and the preset/load handlers below.
+  selectBranch = (index) => {
+    buildSelectedBranchPanel(index);
+    selectedSection.setExpanded(true);
+  };
+
+  parametersTab.appendChild(selectedSection.element);
+  buildSelectedBranchPanel(null);
+
   // ----- Leaves Section -----
   const leavesSection = createSection('Leaves', 'sparkles', false);
 
@@ -892,12 +1049,29 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   leavesSection.add(leafAngleSlider);
   controls.push({ control: leafAngleSlider, update: () => leafAngleSlider.setValue(tree.options.leaves.angle) });
 
-  const leafCountSlider = createSlider('Count', tree.options.leaves.count, 0, 100, 1, (val) => {
+  const leafCountSlider = createSlider('Count', tree.options.leaves.count, 0, 1000, 1, (val) => {
     tree.options.leaves.count = val;
     onChange();
   });
   leavesSection.add(leafCountSlider);
   controls.push({ control: leafCountSlider, update: () => leafCountSlider.setValue(tree.options.leaves.count) });
+
+  // Lowest branch level that sprouts leaves (inclusive). Lowering it makes
+  // more branch levels carry leaves, filling the canopy on large trees.
+  const leafLevelSlider = createSlider('Min Level', tree.options.leaves.level, 1, 3, 1, (val) => {
+    tree.options.leaves.level = val;
+    onChange();
+  });
+  leavesSection.add(leafLevelSlider);
+  controls.push({ control: leafLevelSlider, update: () => leafLevelSlider.setValue(tree.options.leaves.level) });
+
+  // Density scaling: longer branches get proportionally more leaves.
+  const leafDensitySlider = createSlider('Density', tree.options.leaves.density, 0, 2, 0.05, (val) => {
+    tree.options.leaves.density = val;
+    onChange();
+  });
+  leavesSection.add(leafDensitySlider);
+  controls.push({ control: leafDensitySlider, update: () => leafDensitySlider.setValue(tree.options.leaves.density) });
 
   const leafStartSlider = createSlider('Start', tree.options.leaves.start, 0, 1, 0.01, (val) => {
     tree.options.leaves.start = val;
@@ -906,7 +1080,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   leavesSection.add(leafStartSlider);
   controls.push({ control: leafStartSlider, update: () => leafStartSlider.setValue(tree.options.leaves.start) });
 
-  const leafSizeSlider = createSlider('Size', tree.options.leaves.size, 0, 10, 0.1, (val) => {
+  const leafSizeSlider = createSlider('Size', tree.options.leaves.size, 0, 30, 0.1, (val) => {
     tree.options.leaves.size = val;
     onChange();
   });
@@ -1303,10 +1477,12 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       reader.onload = function (e) {
         try {
           tree.options = JSON.parse(e.target.result);
+          tree.options.rngMode = tree.options.rngMode || 'perBranch';
           tree.generate();
           if (previewLevel > 0) {
             applyLODPreview();
           }
+          selectBranch(null);
           refreshAllControls();
         } catch (error) {
           console.error('Error parsing JSON:', error);
@@ -1332,6 +1508,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   // Mobile expand/collapse functionality
   setupMobileToggle(panel, header);
+
+  // Expose the branch-picking API to the scene/raycaster.
+  return { selectBranch };
 }
 
 /**

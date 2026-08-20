@@ -5,6 +5,15 @@ export default class TreeOptions {
     this.seed = 0;
     this.type = TreeType.Deciduous;
 
+    // RNG mode for branch generation:
+    //   'shared'    — one RNG stream for the whole tree (legacy behavior,
+    //                 seed-exact). Changing one branch still perturbs every
+    //                 branch that grows afterwards.
+    //   'perBranch' — each branch gets its own RNG seeded from its path, so
+    //                 editing one branch never disturbs its siblings. This is
+    //                 what makes per-branch overrides truly local.
+    this.rngMode = 'shared';
+
     // Bark parameters
     this.bark = {
       // Informational identifier carried through presets. The library does not
@@ -122,6 +131,14 @@ export default class TreeOptions {
         2: 0,
         3: 0,
       },
+
+      // Per-branch overrides, keyed by the branch path (see Branch.path,
+      // e.g. "0", "0.2", "0c"). Any key present here wins over the
+      // level-based values above for that single branch only. Supported
+      // keys: length, radius, angle, children, gnarliness, taper, twist,
+      // sections, segments, start, force ({direction,strength}), curve
+      // ([{t,dir:{x,y,z},strength}]).
+      overrides: {},
     };
 
     // Leaf parameters
@@ -142,6 +159,17 @@ export default class TreeOptions {
 
       // Number of leaves
       count: 1,
+
+      // Lowest branch level that sprouts leaves (inclusive). Defaults to the
+      // last level so only terminal branches carry leaves (legacy behavior).
+      // Lowering it makes every branch at or below that level grow leaves,
+      // which fills the canopy on large trees.
+      level: 3,
+
+      // Extra leaves per unit of branch length, as a fraction. 0 = legacy
+      // (fixed count). Raising it scales a branch's leaf count up with its
+      // length so long branches stay well covered.
+      density: 0,
 
       // Where leaves start to grow on the length of the branch (0 to 1)
       start: 0,

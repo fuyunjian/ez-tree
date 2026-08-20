@@ -33,8 +33,27 @@ export class Tree extends THREE.Group {
     this.trellisMesh = null;
     this.lod = null;
     this.skeleton = null;
+    this.selectedBranchIndex = null;
+
+    // Highlight overlay for the branch picked in the editor. Rebuilt on
+    // selection; never participates in RNG or meshing of the tree itself.
+    this.selectionMesh = new THREE.Mesh();
+    this.selectionMesh.name = 'BranchSelection';
+    this.selectionMesh.visible = false;
+    this.selectionMesh.material = new THREE.MeshStandardMaterial({
+      color: 0x000000,
+      emissive: 0xffaa00,
+      emissiveIntensity: 0.9,
+      metalness: 0,
+      roughness: 1,
+      transparent: true,
+      opacity: 0.85,
+      depthTest: true,
+    });
+
     this.add(this.branchesMesh);
     this.add(this.leavesMesh);
+    this.add(this.selectionMesh);
     this.options = options;
   }
 
@@ -46,8 +65,8 @@ export class Tree extends THREE.Group {
   }
 
   /**
-   * Loads a preset tree from JSON 
-   * @param {string} preset 
+   * Loads a preset tree from JSON
+   * @param {string} preset
    */
   loadPreset(name) {
     const json = loadPreset(name);
@@ -56,7 +75,7 @@ export class Tree extends THREE.Group {
 
   /**
    * Loads a tree from JSON
-   * @param {TreeOptions} json 
+   * @param {TreeOptions} json
    */
   loadFromJson(json) {
     this.options.copy(json);
@@ -251,6 +270,10 @@ export class Tree extends THREE.Group {
     };
 
     this.rng = new RNG(this.options.seed);
+    this.trunkLength = 1;
+
+    const usePerBranch = this.options.rngMode === 'perBranch';
+    const trunkRng = usePerBranch ? this.#makeRng('0') : null;
 
     // Create the trunk of the tree first
     this.branchQueue.push(
@@ -262,6 +285,8 @@ export class Tree extends THREE.Group {
         0,
         this.options.branch.sections[0],
         this.options.branch.segments[0],
+        '0',
+        trunkRng,
       ),
     );
 
@@ -269,6 +294,114 @@ export class Tree extends THREE.Group {
       const branch = this.branchQueue.shift();
       this.#growBranch(branch);
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Per-branch addressing & RNG
+  // --------------------------------------------------------------------------
+
+  /** Stable 32-bit hash of a branch path string (FNV-1a). */
+  #hashPath(str) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h >>> 0;
+  }
+
+  /** Builds a deterministic RNG for a branch path + global seed. */
+  #makeRng(path) {
+    return new RNG((this.#hashPath(path) ^ (this.options.seed >>> 0)) >>> 0);
+  }
+
+  /** Returns the override object for a branch, or null. */
+  #ov(branch) {
+    const ov = this.options.branch.overrides;
+    return (ov && ov[branch.path]) || null;
+  }
+
+  /** Resolves a single branch parameter, preferring its override. */
+  #branchParam(branch, key, levelDefault) {
+    const o = this.#ov(branch);
+    return o && o[key] !== undefined ? o[key] : levelDefault;
+  }
+
+  /** Number of children a branch spawns, honoring its override. */
+  #branchChildren(branch) {
+    return this.#branchParam(branch, 'children', this.options.branch.children[branch.level]);
+  }
+
+  /**
+   * Adds (or replaces) a single override key for a branch path.
+   * @param {string} path
+   * @param {string} key
+   * @param {*} value
+   */
+  setBranchOverride(path, key, value) {
+    if (!this.options.branch.overrides) this.options.branch.overrides = {};
+    if (!this.options.branch.overrides[path]) this.options.branch.overrides[path] = {};
+    this.options.branch.overrides[path][key] = value;
+  }
+
+  /**
+   * Removes a single override key (and the whole entry if it becomes empty).
+   * @param {string} path
+   * @param {string} key
+   */
+  clearBranchOverride(path, key) {
+    const ov = this.options.branch.overrides?.[path];
+    if (!ov) return;
+    delete ov[key];
+    if (Object.keys(ov).length === 0) delete this.options.branch.overrides[path];
+  }
+
+  /**
+   * Snapshot of a branch's resolved parameters for the editor UI. Returns
+   * null if the index is out of range.
+   * @param {number} index
+   */
+  getBranchInfo(index) {
+    const sb = this.skeleton?.branches?.[index];
+    if (!sb) return null;
+    const b = this.options.branch;
+    const lvl = sb.level;
+    const ov = (b.overrides && b.overrides[sb.path]) || {};
+    return {
+      index,
+      path: sb.path,
+      level: lvl,
+      length: ov.length ?? b.length[lvl],
+      radius: ov.radius ?? b.radius[lvl],
+      angle: ov.angle ?? b.angle[lvl],
+      children: ov.children ?? b.children[lvl],
+      gnarliness: ov.gnarliness ?? b.gnarliness[lvl],
+      taper: ov.taper ?? b.taper[lvl],
+      twist: ov.twist ?? b.twist[lvl],
+      sections: ov.sections ?? b.sections[lvl],
+      segments: ov.segments ?? b.segments[lvl],
+      start: ov.start ?? b.start[lvl],
+      curve: ov.curve ?? null,
+    };
+  }
+
+  /**
+   * Highlights a branch by re-meshing only it into the selection overlay.
+   * Pass null to clear.
+   * @param {number|null} index
+   */
+  setSelectedBranch(index) {
+    this.selectedBranchIndex = index;
+    if (index == null || !this.skeleton?.branches?.[index]) {
+      this.selectionMesh.visible = false;
+      return;
+    }
+    const sb = this.skeleton.branches[index];
+    const buffers = { verts: [], normals: [], uvs: [], indices: [], branchIndex: [] };
+    this.#meshBranch(buffers, sb, index, 1, 1);
+    this.selectionMesh.geometry.dispose();
+    this.selectionMesh.geometry = this.#buildBufferGeometry(buffers);
+    this.selectionMesh.visible = true;
   }
 
   /**
@@ -286,9 +419,9 @@ export class Tree extends THREE.Group {
     const branches = {
       verts: [],
       normals: [],
-      indices: [],
       uvs: [],
-      windFactor: []
+      indices: [],
+      branchIndex: [],
     };
 
     const leaves = {
@@ -298,9 +431,9 @@ export class Tree extends THREE.Group {
       uvs: [],
     };
 
-    for (const skeletonBranch of this.skeleton.branches) {
-      this.#meshBranch(branches, skeletonBranch, sectionStride, segmentFactor);
-    }
+    this.skeleton.branches.forEach((skeletonBranch, idx) => {
+      this.#meshBranch(branches, skeletonBranch, idx, sectionStride, segmentFactor);
+    });
 
     for (let i = 0; i < this.skeleton.leaves.length; i += leafStride) {
       this.#meshLeaf(leaves, this.skeleton.leaves[i], leafScale, billboard);
@@ -328,6 +461,20 @@ export class Tree extends THREE.Group {
     // geometry has been constructed
     let sections = [];
 
+    // RNG stream for this branch: its own (perBranch) or the shared tree
+    // stream (legacy). Using a local keeps the consumption order identical
+    // in both modes, so trees stay seed-exact in 'shared'.
+    const rng = this.options.rngMode === 'perBranch' ? branch.rng : this.rng;
+
+    const taper = this.#branchParam(branch, 'taper', this.options.branch.taper[branch.level]);
+    const twist = this.#branchParam(branch, 'twist', this.options.branch.twist[branch.level]);
+    const ovForce = this.#ov(branch)?.force;
+    const forceDir = ovForce?.direction ?? this.options.branch.force.direction;
+    const forceStrength = ovForce?.strength ?? this.options.branch.force.strength;
+
+    const curve = this.#ov(branch)?.curve;
+    const curveWidth = 1.5 / Math.max(1, branch.sectionCount);
+
     for (let i = 0; i <= branch.sectionCount; i++) {
       let sectionRadius = branch.radius;
 
@@ -339,7 +486,7 @@ export class Tree extends THREE.Group {
         sectionRadius = 0.001;
       } else if (this.options.type === TreeType.Deciduous) {
         sectionRadius *=
-          1 - this.options.branch.taper[branch.level] * (i / branch.sectionCount);
+          1 - taper * (i / branch.sectionCount);
       } else if (this.options.type === TreeType.Evergreen) {
         // Evergreens do not have a terminal branch so they have a taper of 1
         sectionRadius *= 1 - (i / branch.sectionCount);
@@ -360,17 +507,34 @@ export class Tree extends THREE.Group {
       // gnarliness, the larger potential perturbation
       const gnarliness =
         Math.max(1, 1 / Math.sqrt(sectionRadius)) *
-        this.options.branch.gnarliness[branch.level];
+        this.#branchParam(branch, 'gnarliness', this.options.branch.gnarliness[branch.level]);
 
-      sectionOrientation.x += this.rng.random(gnarliness, -gnarliness);
-      sectionOrientation.z += this.rng.random(gnarliness, -gnarliness);
+      sectionOrientation.x += rng.random(gnarliness, -gnarliness);
+      sectionOrientation.z += rng.random(gnarliness, -gnarliness);
+
+      // Deterministic curve control points (override-only). Each control
+      // point bends the section toward its direction, weighted by a smooth
+      // kernel centered on its t position. This gives movable, editable bend
+      // points instead of the single random gnarliness drift.
+      if (curve && curve.length) {
+        const t = i / branch.sectionCount;
+        for (const cp of curve) {
+          const w = Math.exp(-Math.pow((t - (cp.t ?? 0)) / curveWidth, 2));
+          if (w < 1e-3) continue;
+          const d = cp.dir || { x: 0, y: 0, z: 0 };
+          const s = (cp.strength ?? 0.5) * w;
+          sectionOrientation.x += (d.x || 0) * s;
+          sectionOrientation.z += (d.z || 0) * s;
+          sectionOrientation.y += (d.y || 0) * s;
+        }
+      }
 
       // Apply growth force to the branch
       const qSection = new THREE.Quaternion().setFromEuler(sectionOrientation);
 
       const qTwist = new THREE.Quaternion().setFromAxisAngle(
         new THREE.Vector3(0, 1, 0),
-        this.options.branch.twist[branch.level],
+        twist,
       );
 
       qSection.multiply(qTwist);
@@ -384,14 +548,14 @@ export class Tree extends THREE.Group {
       // whatever random direction the section had drifted.
       const sectionUp = new THREE.Vector3(0, 1, 0).applyQuaternion(qSection);
       const target = new THREE.Vector3()
-        .copy(this.options.branch.force.direction)
+        .copy(forceDir)
         .normalize();
       const axis = new THREE.Vector3().crossVectors(sectionUp, target);
       const sinFull = axis.length();
       if (sinFull > 1e-6) {
         axis.divideScalar(sinFull);
         const fullAngle = Math.atan2(sinFull, sectionUp.dot(target));
-        const step = this.options.branch.force.strength / sectionRadius;
+        const step = forceStrength / sectionRadius;
         const clamped = Math.max(-fullAngle, Math.min(fullAngle, step));
         qSection.premultiply(
           new THREE.Quaternion().setFromAxisAngle(axis, clamped),
@@ -413,10 +577,19 @@ export class Tree extends THREE.Group {
       sectionOrientation.setFromQuaternion(qSection);
     }
 
+    // Length of this branch (used for trunk reference + leaf density).
+    const branchLength = sections[sections.length - 1].origin.distanceTo(sections[0].origin);
+    if (branch.path === '0' && branchLength > 0) {
+      this.trunkLength = branchLength;
+    }
+
     this.skeleton.branches.push({
       sections,
       segmentCount: branch.segmentCount,
       baseRadius: branch.radius,
+      path: branch.path,
+      level: branch.level,
+      length: branchLength,
     });
 
     // Deciduous trees have a terminal branch that grows out of the
@@ -425,32 +598,49 @@ export class Tree extends THREE.Group {
       const lastSection = sections[sections.length - 1];
 
       if (branch.level < this.options.branch.levels) {
+        const tipPath = branch.path + 'c';
+        const tipOv = (this.options.branch.overrides && this.options.branch.overrides[tipPath]) || {};
+        const tipLength = tipOv.length ?? this.options.branch.length[branch.level + 1];
+        const tipSections = tipOv.sections ?? branch.sectionCount;
+        const tipSegments = tipOv.segments ?? branch.segmentCount;
+        const tipRng = this.options.rngMode === 'perBranch' ? this.#makeRng(tipPath) : null;
         this.branchQueue.push(
           new Branch(
             lastSection.origin,
             lastSection.orientation,
-            this.options.branch.length[branch.level + 1],
+            tipLength,
             lastSection.radius,
             branch.level + 1,
-            // Section count and segment count must be same as parent branch
-            // since the child branch is growing from the end of the parent branch
-            branch.sectionCount,
-            branch.segmentCount,
+            tipSections,
+            tipSegments,
+            tipPath,
+            tipRng,
           ),
         );
       } else {
-        this.#recordLeaf(lastSection.origin, lastSection.orientation);
+        this.#recordLeaf(lastSection.origin, lastSection.orientation, rng);
       }
     }
 
     // If we are on the last branch level, generate leaves
-    if (branch.level === this.options.branch.levels) {
-      this.generateLeaves(sections);
-    } else if (branch.level < this.options.branch.levels) {
+    const leavesLevel = Math.min(
+      this.options.leaves.level ?? this.options.branch.levels,
+      this.options.branch.levels,
+    );
+
+    if (branch.level < this.options.branch.levels) {
       this.generateChildBranches(
-        this.options.branch.children[branch.level],
+        this.#branchChildren(branch),
         branch.level + 1,
-        sections);
+        sections,
+        rng,
+        branch.path,
+      );
+      if (branch.level >= leavesLevel) {
+        this.generateLeaves(sections, rng, branchLength);
+      }
+    } else {
+      this.generateLeaves(sections, rng, branchLength);
     }
   }
 
@@ -463,18 +653,30 @@ export class Tree extends THREE.Group {
    *  orientation: THREE.Euler,
    *  radius: number
    * }[]} sections The parent branch's sections
+   * @param {RNG} parentRng The RNG stream driving this generation
+   * @param {string} parentPath Stable path of the parent branch
    * @returns
    */
-  generateChildBranches(count, level, sections) {
-    const radialOffset = this.rng.random();
+  generateChildBranches(count, level, sections, parentRng, parentPath) {
+    const usePerBranch = this.options.rngMode === 'perBranch';
     const startMin = this.options.branch.start[level];
     const heightStep = (1.0 - startMin) / count;
-    const angleSlots = this.shuffledIndices(count);
+
+    // In shared mode, shuffle once on the shared stream (legacy order). In
+    // perBranch mode each child draws from its own stream so sibling
+    // placement is independent and editing one never shifts another.
+    const angleSlots = usePerBranch
+      ? null
+      : this.shuffledIndices(count, parentRng);
 
     for (let i = 0; i < count; i++) {
+      const childPath = parentPath + '.' + i;
+      const childOv = (this.options.branch.overrides && this.options.branch.overrides[childPath]) || {};
+      const childRng = usePerBranch ? this.#makeRng(childPath) : parentRng;
+
       // Stratified sampling along the parent's length: jitter within slot [i, i+1]
       // so children are spread evenly but not perfectly periodic.
-      let childBranchStart = startMin + (i + this.rng.random()) * heightStep;
+      let childBranchStart = startMin + (i + childRng.random()) * heightStep;
 
       // Find which sections are on either side of the child branch origin point
       // so we can determine the origin, orientation and radius of the branch
@@ -515,11 +717,13 @@ export class Tree extends THREE.Group {
       // angleSlots[i] randomly permutes slot assignment so that the height slot
       // and angle slot are uncorrelated — otherwise evergreens (where branch
       // length depends on height) spiral their longest branches to a fixed side.
-      const radialJitter = this.rng.random(0.5, -0.5);
-      const radialAngle = 2.0 * Math.PI * (radialOffset + (angleSlots[i] + radialJitter) / count);
+      const radialOffset = childRng.random();
+      const radialJitter = childRng.random(0.5, -0.5);
+      const slots = usePerBranch ? this.shuffledIndices(count, childRng) : angleSlots;
+      const radialAngle = 2.0 * Math.PI * (radialOffset + (slots[i] + radialJitter) / count);
       const q1 = new THREE.Quaternion().setFromAxisAngle(
         new THREE.Vector3(1, 0, 0),
-        this.options.branch.angle[level] / (180 / Math.PI),
+        (childOv.angle ?? this.options.branch.angle[level]) / (180 / Math.PI),
       );
       const q2 = new THREE.Quaternion().setFromAxisAngle(
         new THREE.Vector3(0, 1, 0),
@@ -532,7 +736,7 @@ export class Tree extends THREE.Group {
       );
 
       let childBranchLength =
-        this.options.branch.length[level] *
+        (childOv.length ?? this.options.branch.length[level]) *
         (this.options.type === TreeType.Evergreen
           ? 1.0 - childBranchStart
           : 1.0);
@@ -544,8 +748,10 @@ export class Tree extends THREE.Group {
           childBranchLength,
           childBranchRadius,
           level,
-          this.options.branch.sections[level],
-          this.options.branch.segments[level],
+          childOv.sections ?? this.options.branch.sections[level],
+          childOv.segments ?? this.options.branch.segments[level],
+          childPath,
+          usePerBranch ? childRng : null,
         ),
       );
     }
@@ -554,22 +760,30 @@ export class Tree extends THREE.Group {
   /**
    * Logic for spawning child branches from a parent branch's section
    * @param {{
-  *  origin: THREE.Vector3,
-  *  orientation: THREE.Euler,
-  *  radius: number
-  * }[]} sections The parent branch's sections
-  * @returns
-  */
-  generateLeaves(sections) {
-    const radialOffset = this.rng.random();
-    const count = this.options.leaves.count;
+   *  origin: THREE.Vector3,
+   *  orientation: THREE.Euler,
+   *  radius: number
+   * }[]} sections The parent branch's sections
+   * @returns
+   */
+  generateLeaves(sections, rng, branchLength) {
+    const radialOffset = rng.random();
+    const baseCount = this.options.leaves.count;
+
+    // Density: scale the leaf count with this branch's length relative to the
+    // trunk so long branches stay well covered on large trees. density = 0
+    // leaves the count unchanged (legacy behavior).
+    const density = this.options.leaves.density || 0;
+    const factor = Math.max(0.1, 1 + density * (branchLength / (this.trunkLength || 1) - 1));
+    const count = Math.max(1, Math.round(baseCount * factor));
+
     const startMin = this.options.leaves.start;
     const heightStep = (1.0 - startMin) / count;
-    const angleSlots = this.shuffledIndices(count);
+    const angleSlots = this.shuffledIndices(count, rng);
 
     for (let i = 0; i < count; i++) {
       // Stratified sampling along the parent's length.
-      let leafStart = startMin + (i + this.rng.random()) * heightStep;
+      let leafStart = startMin + (i + rng.random()) * heightStep;
 
       // Find which sections are on either side of the child branch origin point
       // so we can determine the origin, orientation and radius of the branch
@@ -603,7 +817,7 @@ export class Tree extends THREE.Group {
 
       // Stratified radial angle with permuted slot assignment.
       // See generateChildBranches for rationale.
-      const radialJitter = this.rng.random(0.5, -0.5);
+      const radialJitter = rng.random(0.5, -0.5);
       const radialAngle = 2.0 * Math.PI * (radialOffset + (angleSlots[i] + radialJitter) / count);
       const q1 = new THREE.Quaternion().setFromAxisAngle(
         new THREE.Vector3(1, 0, 0),
@@ -619,7 +833,7 @@ export class Tree extends THREE.Group {
         q3.multiply(q2.multiply(q1)),
       );
 
-      this.#recordLeaf(leafOrigin, leafOrientation);
+      this.#recordLeaf(leafOrigin, leafOrientation, rng);
     }
   }
 
@@ -628,12 +842,13 @@ export class Tree extends THREE.Group {
   * here so the meshing passes stay RNG-free.
   * @param {THREE.Vector3} origin The starting point of the leaf
   * @param {THREE.Euler} orientation The orientation of the leaf
+  * @param {RNG} rng The stream to sample size variance from
   */
-  #recordLeaf(origin, orientation) {
+  #recordLeaf(origin, orientation, rng) {
     const size =
       this.options.leaves.size *
       (1 +
-        this.rng.random(
+        rng.random(
           this.options.leaves.sizeVariance,
           -this.options.leaves.sizeVariance,
         ));
@@ -728,15 +943,16 @@ export class Tree extends THREE.Group {
   }
 
   /**
-   * Fisher-Yates shuffle of [0..count-1] using the tree's RNG so results stay
-   * seed-reproducible.
+   * Fisher-Yates shuffle of [0..count-1] using the supplied RNG so results
+   * stay seed-reproducible.
    * @param {number} count
+   * @param {RNG} rng
    * @returns {number[]}
    */
-  shuffledIndices(count) {
+  shuffledIndices(count, rng) {
     const arr = Array.from({ length: count }, (_, k) => k);
     for (let k = count - 1; k > 0; k--) {
-      const r = Math.floor(this.rng.random() * (k + 1));
+      const r = Math.floor(rng.random() * (k + 1));
       [arr[k], arr[r]] = [arr[r], arr[k]];
     }
     return arr;
@@ -744,12 +960,13 @@ export class Tree extends THREE.Group {
 
   /**
    * Emits the ring geometry and indices for one skeleton branch
-   * @param {{verts: number[], normals: number[], indices: number[], uvs: number[]}} buffers
+   * @param {{verts: number[], normals: number[], indices: number[], uvs: number[], branchIndex: number[]}} buffers
    * @param {{sections: {origin: THREE.Vector3, orientation: THREE.Euler, radius: number}[], segmentCount: number, baseRadius: number}} skeletonBranch
+   * @param {number} branchIndex Stable index of this branch in skeleton.branches
    * @param {number} sectionStride Sample every Nth section ring
    * @param {number} segmentFactor Radial segment multiplier
    */
-  #meshBranch(buffers, skeletonBranch, sectionStride, segmentFactor) {
+  #meshBranch(buffers, skeletonBranch, branchIndex, sectionStride, segmentFactor) {
     const { sections, segmentCount, baseRadius } = skeletonBranch;
 
     // Terminal branches inherit the parent's segmentCount, so parent and
@@ -775,6 +992,8 @@ export class Tree extends THREE.Group {
     if ((sections.length - 1) % sectionStride !== 0) {
       sampled.push(sections[sections.length - 1]);
     }
+
+    if (!buffers.branchIndex) buffers.branchIndex = [];
 
     // Used later for geometry index generation
     const indexOffset = buffers.verts.length / 3;
@@ -807,6 +1026,7 @@ export class Tree extends THREE.Group {
         buffers.verts.push(...Object.values(vertex));
         buffers.normals.push(...Object.values(normal));
         buffers.uvs.push(...Object.values(uv));
+        buffers.branchIndex.push(branchIndex);
 
         if (j === 0) {
           first = { vertex, normal, uv };
@@ -818,6 +1038,7 @@ export class Tree extends THREE.Group {
       buffers.verts.push(...Object.values(first.vertex));
       buffers.normals.push(...Object.values(first.normal));
       buffers.uvs.push(wrapsX, first.uv.y);
+      buffers.branchIndex.push(branchIndex);
     }
 
     // Build geometry for each section of the branch (cylinder without end caps)
@@ -838,7 +1059,7 @@ export class Tree extends THREE.Group {
 
   /**
    * Builds a BufferGeometry from raw attribute buffers
-   * @param {{verts: number[], normals: number[], indices: number[], uvs: number[]}} buffers
+   * @param {{verts: number[], normals: number[], indices: number[], uvs: number[], branchIndex?: number[]}} buffers
    * @returns {THREE.BufferGeometry}
    */
   #buildBufferGeometry(buffers) {
@@ -855,6 +1076,12 @@ export class Tree extends THREE.Group {
       'uv',
       new THREE.BufferAttribute(new Float32Array(buffers.uvs), 2),
     );
+    if (buffers.branchIndex && buffers.branchIndex.length) {
+      g.setAttribute(
+        'aBranchIndex',
+        new THREE.BufferAttribute(new Float32Array(buffers.branchIndex), 1),
+      );
+    }
     g.setIndex(
       new THREE.BufferAttribute(new Uint16Array(buffers.indices), 1),
     );
@@ -990,16 +1217,16 @@ export class Tree extends THREE.Group {
             vec3 i1 = min( g.xyz, l.zxy );
             vec3 i2 = max( g.xyz, l.zxy );
 
-            //  x0 = x0 - 0. + 0.0 * C 
+            //  x0 = x0 - 0. + 0.0 * C
             vec3 x1 = x0 - i1 + C.xxx;
             vec3 x2 = x0 - i2 + C.yyy; // 2.0 * C.x = 1/3 = C.y
             vec3 x3 = x0 - D.yyy;      // -1.0 + 3.0 * C.x = -0.5
 
             // Permutations
             i = mod289(i);
-            vec4 p = permute( permute( permute( 
+            vec4 p = permute( permute( permute(
                         i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
-                      + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) 
+                      + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
                       + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
 
             // Gradients: 7x7 points over a square, mapped onto an octahedron.
@@ -1041,10 +1268,10 @@ export class Tree extends THREE.Group {
             // Mix contributions from the four corners
             vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
             m = m * m;
-            return 42.0 * dot( m*m, vec4( dot(g0,x0), dot(g1,x1), 
+            return 42.0 * dot( m*m, vec4( dot(g0,x0), dot(g1,x1),
                                           dot(g2,x2), dot(g3,x3) ) );
         }
-          
+
         void main() {`,
       );
 

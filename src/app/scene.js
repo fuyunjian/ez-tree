@@ -43,6 +43,8 @@ export async function createScene(renderer) {
   controls.update();
 
   const tree = new Tree();
+  // Per-branch RNG so individual overrides never disturb sibling branches.
+  tree.options.rngMode = 'perBranch';
   loadPresetWithTextures(tree, 'Ash Medium');
   tree.castShadow = true;
   tree.receiveShadow = true;

@@ -58,9 +58,41 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   window.addEventListener('resize', resize);
 
-  setupUI(tree, environment, renderer, scene, camera, controls, 'Ash Medium');
+  const ui = setupUI(tree, environment, renderer, scene, camera, controls, 'Ash Medium');
   animate();
   resize();
+
+  // ----- Click-to-select a branch for individual editing -----
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  let downX = 0, downY = 0;
+
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    downX = e.clientX;
+    downY = e.clientY;
+  });
+
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    // Ignore drags (camera orbit) — only treat near-stationary left clicks as picks.
+    if (e.button !== 0) return;
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+
+    const hits = raycaster.intersectObject(tree.branchesMesh, false);
+    if (hits.length > 0 && hits[0].face) {
+      const attr = tree.branchesMesh.geometry.attributes.aBranchIndex;
+      if (attr) {
+        const idx = attr.getX(hits[0].face.a);
+        ui.selectBranch(idx);
+        return;
+      }
+    }
+    ui.selectBranch(null);
+  });
 
   document.getElementById('audio-status').style.display = 'block';
 });
