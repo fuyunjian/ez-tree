@@ -764,6 +764,15 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(rngModeSelect);
   controls.push({ control: rngModeSelect, update: () => rngModeSelect.setValue(tree.options.rngMode) });
 
+  // Stage F: seal the open tube ends (dead/snapped branches, exposed root
+  // tips, user-placed branches) so they never show a hole.
+  const capEndsToggle = createToggle('枝端封口', tree.options.branch.capEnds !== false, (val) => {
+    tree.options.branch.capEnds = val;
+    onChange();
+  });
+  branchSection.add(capEndsToggle);
+  controls.push({ control: capEndsToggle, update: () => capEndsToggle.setValue(tree.options.branch.capEnds !== false) });
+
   // Angle subsection
   const angleSubsection = createSubSection('角度');
   for (let i = 1; i <= 3; i++) {
@@ -1230,6 +1239,49 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
     const pathDisplay = createDisplay('路径', info.path);
     selectedContent.appendChild(pathDisplay.element);
+
+    // ----- User-placed branch (right-click → add) -----
+    // Offers sliding along / rotating around the parent, plus removal.
+    // Procedural branches skip this block entirely.
+    if (info.user) {
+      const userHeader = document.createElement('div');
+      userHeader.className = 'control-row';
+      userHeader.style.fontWeight = '600';
+      userHeader.textContent = '自定义枝干';
+      selectedContent.appendChild(userHeader);
+
+      const parentDisplay = createDisplay('父枝', info.user.parentPath);
+      selectedContent.appendChild(parentDisplay.element);
+
+      const tSlider = createSlider(
+        '父级位置', info.user.t ?? 0.5, 0.02, 0.98, 0.01,
+        (val) => { tree.moveUserBranch(info.path, { t: val }); onChange(); },
+      );
+      selectedContent.appendChild(tSlider.element);
+
+      const radialDeg = ((info.user.radialAngle ?? 0) * 180 / Math.PI + 360) % 360;
+      const radialSlider = createSlider(
+        '径向角度', radialDeg, 0, 360, 1,
+        (val) => {
+          tree.moveUserBranch(info.path, { radialAngle: val * Math.PI / 180 });
+          onChange();
+        },
+      );
+      selectedContent.appendChild(radialSlider.element);
+
+      const dragHint = document.createElement('div');
+      dragHint.className = 'control-row';
+      dragHint.style.opacity = '0.7';
+      dragHint.textContent = '提示：在场景中按住该枝干拖动，可让它沿父枝滑动。';
+      selectedContent.appendChild(dragHint);
+
+      const delBtn = createButton('删除此枝干', 'folderOpen', () => {
+        tree.removeUserBranch(info.path);
+        onChange();
+        buildSelectedBranchPanel(null);
+      });
+      selectedContent.appendChild(delBtn.element);
+    }
 
     const makeOverrideSlider = (label, key, value, min, max, step) => {
       const slider = createSlider(label, value, min, max, step, (val) => {
@@ -1866,7 +1918,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   setupMobileToggle(panel, header);
 
   // Expose the branch-picking API to the scene/raycaster.
-  return { selectBranch };
+  return { selectBranch, regenerate: onChange };
 }
 
 /**

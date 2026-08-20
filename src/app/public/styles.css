@@ -986,6 +986,23 @@ a {
   background: var(--card-hover);
 }
 
+/* Confirm dialog button row (add-branch, etc.) */
+.dialog-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.close-button.primary {
+  background: linear-gradient(135deg, #4a7c59 0%, #2d5a3d 100%);
+  border-color: transparent;
+}
+
+.close-button.primary:hover {
+  filter: brightness(1.15);
+}
+
 /* Course CTA in About Dialog */
 .course-cta {
   display: flex;

@@ -294,6 +294,10 @@ export class Tree extends THREE.Group {
       const branch = this.branchQueue.shift();
       this.#growBranch(branch);
     }
+
+    // Stage F: user-placed branches grow AFTER the procedural tree, each
+    // from its own RNG stream, so they never shift the main tree's shape.
+    this.#growUserBranches();
   }
 
   // --------------------------------------------------------------------------
@@ -397,6 +401,8 @@ export class Tree extends THREE.Group {
       segments: ov.segments ?? b.segments[lvl],
       start: ov.start ?? b.start[lvl],
       curve: ov.curve ?? null,
+      // Stage F: user-branch descriptor (null for procedural branches).
+      user: sb.user || null,
     };
   }
 
@@ -547,8 +553,11 @@ export class Tree extends THREE.Group {
 
     // RNG stream for this branch: its own (perBranch) or the shared tree
     // stream (legacy). Using a local keeps the consumption order identical
-    // in both modes, so trees stay seed-exact in 'shared'.
-    const rng = this.options.rngMode === 'perBranch' ? branch.rng : this.rng;
+    // in both modes, so trees stay seed-exact in 'shared'. User-placed
+    // branches (Stage F) always use their own stream regardless of mode.
+    const rng = (branch.forceOwnRng && branch.rng)
+      ? branch.rng
+      : (this.options.rngMode === 'perBranch' ? branch.rng : this.rng);
 
     // Stage A — trunk sculpting (level-0 branches only). Stage E — global
     // pose (whole tree). Read once so the section loop below can apply them.
@@ -752,6 +761,10 @@ export class Tree extends THREE.Group {
         crackCount: dw.crackCount, crackDepth: dw.crackDepth,
         crackWidth: dw.crackWidth, crackPhase: dw.crackPhase,
       } : null,
+      // Stage F: the user-branch descriptor this skeleton branch was grown
+      // from (null for every procedural branch). Used by the editor UI and
+      // by move/remove APIs to address it.
+      user: branch.user || null,
     });
 
     // Stage B: sprout exposed root fingers from the trunk base. Runs only for
@@ -943,6 +956,202 @@ export class Tree extends THREE.Group {
       if (isDead) childBranch.dead = true;
       this.branchQueue.push(childBranch);
     }
+  }
+
+  /**
+   * Stage F: grows the user-placed custom branches (app: right-click a spot
+   * on an existing branch → add). Each descriptor re-attaches at `t` along
+   * its parent's skeleton on EVERY generate(), so the branch stays snapped
+   * to its parent no matter how the parent is edited. Each one consumes a
+   * dedicated deterministic RNG (never the shared stream), so adding,
+   * moving or removing a user branch never reshapes the rest of the tree.
+   */
+  #growUserBranches() {
+    const list = this.options.branch.userBranches;
+    if (!list || !list.length) return;
+
+    const byPath = new Map(this.skeleton.branches.map((b) => [b.path, b]));
+
+    for (const ub of list) {
+      // The parent may have vanished (preset/param change) — skip gracefully.
+      const parent = byPath.get(ub.parentPath);
+      if (!parent) continue;
+
+      const path = `${ub.parentPath}@u${ub.id}`;
+      const level = Math.min(parent.level + 1, this.options.branch.levels);
+      const ov = (this.options.branch.overrides && this.options.branch.overrides[path]) || {};
+
+      const sections = parent.sections;
+      const t = Math.min(0.98, Math.max(0.02, ub.t ?? 0.5));
+      const sectionIndex = Math.floor(t * (sections.length - 1));
+      const sectionA = sections[sectionIndex];
+      const sectionB = sectionIndex === sections.length - 1
+        ? sectionA
+        : sections[sectionIndex + 1];
+      const alpha =
+        (t - sectionIndex / (sections.length - 1)) / (1 / (sections.length - 1));
+
+      // Interpolate the attach point on the parent (same math as
+      // generateChildBranches): origin on the axis, radius matched to the
+      // parent's local thickness, orientation rotated out by angle+radial.
+      const origin = new THREE.Vector3().lerpVectors(
+        sectionA.origin,
+        sectionB.origin,
+        alpha,
+      );
+      const radius =
+        (ov.radius ?? this.options.branch.radius[level]) *
+        ((1 - alpha) * sectionA.radius + alpha * sectionB.radius);
+
+      const qA = new THREE.Quaternion().setFromEuler(sectionA.orientation);
+      const qB = new THREE.Quaternion().setFromEuler(sectionB.orientation);
+      const parentOrientation = new THREE.Euler().setFromQuaternion(
+        qB.slerp(qA, alpha),
+      );
+
+      const q1 = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(1, 0, 0),
+        (ov.angle ?? this.options.branch.angle[level]) / (180 / Math.PI),
+      );
+      const q2 = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        ub.radialAngle ?? 0,
+      );
+      const q3 = new THREE.Quaternion().setFromEuler(parentOrientation);
+
+      const branch = new Branch(
+        origin,
+        new THREE.Euler().setFromQuaternion(q3.multiply(q2.multiply(q1))),
+        ov.length ?? this.options.branch.length[level],
+        radius,
+        level,
+        ov.sections ?? this.options.branch.sections[level],
+        ov.segments ?? this.options.branch.segments[level],
+        path,
+        this.#makeRng(path),
+      );
+      // Always use this branch's own RNG, even in 'shared' mode, and carry
+      // the descriptor so the skeleton entry (and the editor UI) can find it.
+      branch.forceOwnRng = true;
+      branch.user = ub;
+
+      this.branchQueue.push(branch);
+      // Drain immediately so a user branch attached to another user branch
+      // (added later at a lower point) can find its parent in the skeleton.
+      while (this.branchQueue.length > 0) {
+        this.#growBranch(this.branchQueue.shift());
+      }
+      for (const sb of this.skeleton.branches) {
+        if (!byPath.has(sb.path)) byPath.set(sb.path, sb);
+      }
+    }
+  }
+
+  /**
+   * Stage F: adds a user-placed branch descriptor. Does NOT regenerate —
+   * call generate() afterwards. Returns the new descriptor (or null).
+   * @param {number} parentIndex skeleton index of the parent branch
+   * @param {number} t attachment point along the parent (0..1)
+   * @param {number} radialAngle angle around the parent's axis (radians)
+   */
+  addUserBranch(parentIndex, t, radialAngle) {
+    const parent = this.skeleton?.branches?.[parentIndex];
+    if (!parent) return null;
+    const list = this.options.branch.userBranches
+      || (this.options.branch.userBranches = []);
+    const id = list.reduce((m, u) => Math.max(m, u.id || 0), 0) + 1;
+    const ub = {
+      id,
+      parentPath: parent.path,
+      t: Math.min(0.98, Math.max(0.02, t ?? 0.5)),
+      radialAngle: radialAngle ?? 0,
+    };
+    list.push(ub);
+    return ub;
+  }
+
+  /**
+   * Stage F: moves a user branch along and/or around its parent.
+   * @param {string} path user branch path, e.g. "0.2@u1"
+   * @param {{t?: number, radialAngle?: number}} patch
+   */
+  moveUserBranch(path, { t, radialAngle } = {}) {
+    const ub = (this.options.branch.userBranches || []).find(
+      (u) => `${u.parentPath}@u${u.id}` === path,
+    );
+    if (!ub) return false;
+    if (t !== undefined) ub.t = Math.min(0.98, Math.max(0.02, t));
+    if (radialAngle !== undefined) ub.radialAngle = radialAngle;
+    return true;
+  }
+
+  /**
+   * Stage F: removes a user branch. Also drops its overrides and any user
+   * branches attached to it (or to its descendants).
+   * @param {string} path user branch path, e.g. "0.2@u1"
+   */
+  removeUserBranch(path) {
+    const list = this.options.branch.userBranches || [];
+    const i = list.findIndex((u) => `${u.parentPath}@u${u.id}` === path);
+    if (i < 0) return false;
+    list.splice(i, 1);
+
+    // Drop overrides belonging to the removed branch and its descendants.
+    if (this.options.branch.overrides) {
+      for (const key of Object.keys(this.options.branch.overrides)) {
+        if (key === path || key.startsWith(`${path}.`)) {
+          delete this.options.branch.overrides[key];
+        }
+      }
+    }
+
+    // Drop user branches parented to the removed branch or its descendants.
+    for (let j = list.length - 1; j >= 0; j--) {
+      const p = list[j].parentPath;
+      if (p === path || p.startsWith(`${path}.`) || p.startsWith(`${path}@u`)) {
+        list.splice(j, 1);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Stage F: converts a world-space point on/near a branch into an
+   * attachment descriptor (t along the branch + radial angle around its
+   * axis at that point). Used by the app's right-click "add branch here".
+   * @param {number} index skeleton branch index
+   * @param {THREE.Vector3} point world-space hit point
+   * @returns {{t: number, radialAngle: number}|null}
+   */
+  getBranchAttachFromPoint(index, point) {
+    const sb = this.skeleton?.branches?.[index];
+    if (!sb || sb.sections.length < 2) return null;
+    const sections = sb.sections;
+
+    // Nearest segment (3D point-to-segment distance).
+    let best = { dist: Infinity, i: 0, alpha: 0 };
+    for (let i = 0; i < sections.length - 1; i++) {
+      const a = sections[i].origin;
+      const b = sections[i + 1].origin;
+      const ab = new THREE.Vector3().subVectors(b, a);
+      const len2 = ab.lengthSq();
+      const alpha = len2 > 1e-10
+        ? Math.max(0, Math.min(1, new THREE.Vector3().subVectors(point, a).dot(ab) / len2))
+        : 0;
+      const p = new THREE.Vector3().copy(a).addScaledVector(ab, alpha);
+      const dist = p.distanceToSquared(point);
+      if (dist < best.dist) best = { dist, i, alpha };
+    }
+
+    const t = Math.min(0.98, Math.max(0.02, (best.i + best.alpha) / (sections.length - 1)));
+
+    // Radial angle of the hit point in the local frame of that section.
+    const section = sections[best.i + (best.alpha > 0.5 && best.i + 1 < sections.length ? 1 : 0)];
+    const q = new THREE.Quaternion().setFromEuler(section.orientation).invert();
+    const local = new THREE.Vector3().subVectors(point, section.origin).applyQuaternion(q);
+    const radialAngle = Math.atan2(local.z, local.x);
+
+    return { t, radialAngle };
   }
 
   /**
@@ -1430,6 +1639,53 @@ export class Tree extends THREE.Group {
         v3 = v1 + N;
         v4 = v2 + N;
         buffers.indices.push(v1, v3, v2, v2, v3, v4);
+      }
+    }
+
+    // Stage F: end caps. Tube sections are open at their ends — dead/snapped
+    // branches, exposed root tips and user-placed branches would show a hole.
+    // A triangle fan from a center vertex closes them. The fan reuses the
+    // ring vertices already emitted above, so caps are identical across LOD
+    // detail levels. The trunk's base is also capped (facing down) so the
+    // ground line never shows through; child branch bases are embedded in
+    // their parent and stay uncapped.
+    if (this.options.branch.capEnds !== false) {
+      // Tip cap — skip degenerate fans on near-zero-radius terminal rings.
+      const lastIdx = sampled.length - 1;
+      const lastSection = sampled[lastIdx];
+      if (lastSection.radius > 0.0015) {
+        const centerIndex = buffers.verts.length / 3;
+        const up = new THREE.Vector3(0, 1, 0)
+          .applyEuler(lastSection.orientation)
+          .normalize();
+        const uvY = lastIdx % 2 === 0 ? 0 : 1;
+        buffers.verts.push(lastSection.origin.x, lastSection.origin.y, lastSection.origin.z);
+        buffers.normals.push(up.x, up.y, up.z);
+        buffers.uvs.push(wrapsX * 0.5, uvY);
+        buffers.branchIndex.push(branchIndex);
+        const ringStart = indexOffset + lastIdx * N;
+        for (let j = 0; j < segments; j++) {
+          // (center, j+1, j) faces along the branch's +axis
+          buffers.indices.push(centerIndex, ringStart + j + 1, ringStart + j);
+        }
+      }
+
+      // Base cap — trunk only.
+      if (skeletonBranch.level === 0) {
+        const firstSection = sampled[0];
+        const centerIndex = buffers.verts.length / 3;
+        const down = new THREE.Vector3(0, -1, 0)
+          .applyEuler(firstSection.orientation)
+          .normalize();
+        buffers.verts.push(firstSection.origin.x, firstSection.origin.y, firstSection.origin.z);
+        buffers.normals.push(down.x, down.y, down.z);
+        buffers.uvs.push(wrapsX * 0.5, 0);
+        buffers.branchIndex.push(branchIndex);
+        const ringStart = indexOffset;
+        for (let j = 0; j < segments; j++) {
+          // (center, j, j+1) faces along the branch's -axis
+          buffers.indices.push(centerIndex, ringStart + j, ringStart + j + 1);
+        }
       }
     }
   }

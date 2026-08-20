@@ -139,6 +139,21 @@ export default class TreeOptions {
       // sections, segments, start, force ({direction,strength}), curve
       // ([{t,dir:{x,y,z},strength}]).
       overrides: {},
+
+      // User-placed custom branches, added from the app by right-clicking a
+      // spot on an existing branch. Each entry: { id, parentPath, t,
+      // radialAngle } where parentPath addresses the parent branch, t is the
+      // attachment point along the parent (0..1) and radialAngle the angle
+      // around the parent's axis (radians). The attach point is re-derived
+      // from the parent's skeleton on every generate(), so the branch stays
+      // snapped to its parent while t/radialAngle are editable (sliding /
+      // rotating). Paths look like "0.2@u1" and accept normal overrides.
+      userBranches: [],
+
+      // Cap the open ends of branches with a triangle fan (dead/snapped
+      // branches, exposed root tips, user branches). The trunk base is also
+      // capped so it never shows a hole at ground level.
+      capEnds: true,
     };
 
     // Leaf parameters
