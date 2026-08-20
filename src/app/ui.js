@@ -883,6 +883,126 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   parametersTab.appendChild(branchSection.element);
 
+  // ----- Trunk Sculpt Section (stage A) -----
+  const trunkSection = createSection('Trunk Sculpt', 'share', false);
+  const trunkOpt = tree.options.trunk;
+
+  const bottomSwellSlider = createSlider('Bottom Swell', trunkOpt.bottomSwell, 1, 3, 0.01, (val) => {
+    trunkOpt.bottomSwell = val; onChange();
+  });
+  trunkSection.add(bottomSwellSlider);
+  controls.push({ control: bottomSwellSlider, update: () => bottomSwellSlider.setValue(trunkOpt.bottomSwell) });
+
+  const swellHeightSlider = createSlider('Swell Height', trunkOpt.swellHeight, 0.05, 1, 0.01, (val) => {
+    trunkOpt.swellHeight = val; onChange();
+  });
+  trunkSection.add(swellHeightSlider);
+  controls.push({ control: swellHeightSlider, update: () => swellHeightSlider.setValue(trunkOpt.swellHeight) });
+
+  const bowSlider = createSlider('Bow', trunkOpt.bow, 0, 20, 0.1, (val) => {
+    trunkOpt.bow = val; onChange();
+  });
+  trunkSection.add(bowSlider);
+  controls.push({ control: bowSlider, update: () => bowSlider.setValue(trunkOpt.bow) });
+
+  const bowHeightSlider = createSlider('Bow Height', trunkOpt.bowHeight, 0.1, 0.9, 0.01, (val) => {
+    trunkOpt.bowHeight = val; onChange();
+  });
+  trunkSection.add(bowHeightSlider);
+  controls.push({ control: bowHeightSlider, update: () => bowHeightSlider.setValue(trunkOpt.bowHeight) });
+
+  const bowDirSlider = createSlider('Bow Direction', trunkOpt.bowDirection, 0, Math.PI * 2, 0.01, (val) => {
+    trunkOpt.bowDirection = val; onChange();
+  });
+  trunkSection.add(bowDirSlider);
+  controls.push({ control: bowDirSlider, update: () => bowDirSlider.setValue(trunkOpt.bowDirection) });
+
+  const trunkTwistSlider = createSlider('Twist', trunkOpt.twist, -2, 2, 0.01, (val) => {
+    trunkOpt.twist = val; onChange();
+  });
+  trunkSection.add(trunkTwistSlider);
+  controls.push({ control: trunkTwistSlider, update: () => trunkTwistSlider.setValue(trunkOpt.twist) });
+
+  const trunkNoiseSlider = createSlider('Surface Noise', trunkOpt.noise, 0, 2, 0.01, (val) => {
+    trunkOpt.noise = val; onChange();
+  });
+  trunkSection.add(trunkNoiseSlider);
+  controls.push({ control: trunkNoiseSlider, update: () => trunkNoiseSlider.setValue(trunkOpt.noise) });
+
+  const trunkEnabledToggle = createToggle('Enabled', trunkOpt.enabled, (val) => {
+    trunkOpt.enabled = val; onChange();
+  });
+  trunkSection.add(trunkEnabledToggle);
+  controls.push({ control: trunkEnabledToggle, update: () => trunkEnabledToggle.setValue(trunkOpt.enabled) });
+
+  parametersTab.appendChild(trunkSection.element);
+
+  // ----- Global Pose Section (stage E) -----
+  const globalSection = createSection('Global Pose', 'share', false);
+  const gOpt = tree.options.global;
+
+  const leanXSlider = createSlider('Lean X', gOpt.lean.x, -0.05, 0.05, 0.001, (val) => {
+    gOpt.lean.x = val; onChange();
+  });
+  globalSection.add(leanXSlider);
+  controls.push({ control: leanXSlider, update: () => leanXSlider.setValue(gOpt.lean.x) });
+
+  const leanZSlider = createSlider('Lean Z', gOpt.lean.z, -0.05, 0.05, 0.001, (val) => {
+    gOpt.lean.z = val; onChange();
+  });
+  globalSection.add(leanZSlider);
+  controls.push({ control: leanZSlider, update: () => leanZSlider.setValue(gOpt.lean.z) });
+
+  const globalTwistSlider = createSlider('Twist', gOpt.twist, -0.05, 0.05, 0.001, (val) => {
+    gOpt.twist = val; onChange();
+  });
+  globalSection.add(globalTwistSlider);
+  controls.push({ control: globalTwistSlider, update: () => globalTwistSlider.setValue(gOpt.twist) });
+
+  const asymXSlider = createSlider('Asymmetry X', gOpt.asymmetry.x, -0.05, 0.05, 0.001, (val) => {
+    gOpt.asymmetry.x = val; onChange();
+  });
+  globalSection.add(asymXSlider);
+  controls.push({ control: asymXSlider, update: () => asymXSlider.setValue(gOpt.asymmetry.x) });
+
+  const asymZSlider = createSlider('Asymmetry Z', gOpt.asymmetry.z, -0.05, 0.05, 0.001, (val) => {
+    gOpt.asymmetry.z = val; onChange();
+  });
+  globalSection.add(asymZSlider);
+  controls.push({ control: asymZSlider, update: () => asymZSlider.setValue(gOpt.asymmetry.z) });
+
+  const globalEnabledToggle = createToggle('Enabled', gOpt.enabled, (val) => {
+    gOpt.enabled = val; onChange();
+  });
+  globalSection.add(globalEnabledToggle);
+  controls.push({ control: globalEnabledToggle, update: () => globalEnabledToggle.setValue(gOpt.enabled) });
+
+  // One-click "ancient cypress" (Zhang-Fei-bai) pose: bulged base, slight
+  // bow + twist, gentle overall lean/spiral and denser, thicker trunk.
+  const guobaiBtn = createButton('古柏预设 (Ancient Cypress)', 'sparkles', () => {
+    trunkOpt.bottomSwell = 1.8;
+    trunkOpt.swellHeight = 0.3;
+    trunkOpt.bow = 6;
+    trunkOpt.bowHeight = 0.55;
+    trunkOpt.bowDirection = 0.4;
+    trunkOpt.twist = 0.25;
+    trunkOpt.noise = 0.8;
+    trunkOpt.enabled = true;
+    gOpt.lean.x = 0.008;
+    gOpt.lean.z = 0.005;
+    gOpt.twist = 0.008;
+    gOpt.asymmetry.x = 0.004;
+    gOpt.asymmetry.z = 0.0;
+    gOpt.enabled = true;
+    tree.options.branch.radius[0] = 8;
+    tree.options.branch.length[0] = 40;
+    onChange();
+    refreshAllControls();
+  });
+  globalSection.add(guobaiBtn);
+
+  parametersTab.appendChild(globalSection.element);
+
   // ----- Selected Branch Section (per-branch editing) -----
   const selectedSection = createSection('Selected Branch', 'share', false);
   const selectedContent = selectedSection.content;

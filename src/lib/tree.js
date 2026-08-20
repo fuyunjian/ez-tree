@@ -315,6 +315,14 @@ export class Tree extends THREE.Group {
     return new RNG((this.#hashPath(path) ^ (this.options.seed >>> 0)) >>> 0);
   }
 
+  /** Deterministic [-1,1] pseudo-noise for trunk surface, keyed by path+section. */
+  #trunkNoise(seed, i) {
+    let h = (this.#hashPath(seed) ^ Math.imul(i + 1, 2654435761)) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0;
+    h = (h ^ (h >>> 13)) >>> 0;
+    return (h / 4294967295) * 2 - 1;
+  }
+
   /** Returns the override object for a branch, or null. */
   #ov(branch) {
     const ov = this.options.branch.overrides;
@@ -409,6 +417,70 @@ export class Tree extends THREE.Group {
    * Consumes no RNG, so it can run repeatedly with different detail specs.
    * @param {LODDetail} detail
    */
+  /**
+   * Applies trunk sculpt + global pose to a LOCAL section orientation and
+   * returns the posed orientation WITHOUT mutating the local one. This keeps
+   * the pose from double-accumulating across sections: each section's final
+   * direction is Global(y) * local, recomputed from the (still-local)
+   * sectionOrientation on every iteration.
+   * @param {THREE.Euler} localEuler local, un-posed orientation
+   * @param {number} y world height of this section
+   * @param {number} t normalized height 0..1
+   * @param {boolean} useTrunk whether this branch is the trunk (level 0)
+   * @param {object} trunkOpt this.options.trunk
+   * @param {object} gOpt this.options.global
+   * @returns {THREE.Euler}
+   */
+  #applyPose(localEuler, y, t, useTrunk, trunkOpt, gOpt) {
+    let e = new THREE.Euler().copy(localEuler);
+
+    // Stage A: twist the trunk about the vertical axis across its height.
+    if (useTrunk && trunkOpt.twist) {
+      e = new THREE.Euler().setFromQuaternion(
+        new THREE.Quaternion().setFromEuler(e).premultiply(
+          new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(0, 1, 0), trunkOpt.twist * t)));
+    }
+
+    // Stage E: global pose (lean / twist / asymmetry), scaled by world height.
+    if (gOpt && gOpt.enabled) {
+      const qG = new THREE.Quaternion();
+      if (gOpt.twist) {
+        qG.multiply(new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 1, 0), gOpt.twist * y));
+      }
+      if (gOpt.lean && (gOpt.lean.x || gOpt.lean.z)) {
+        // lean.x tilts toward +X (rotate about Z), lean.z toward +Z (rotate about X)
+        qG.multiply(new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 0, 1), gOpt.lean.x * y));
+        qG.multiply(new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(1, 0, 0), -gOpt.lean.z * y));
+      }
+      if (!qG.equals(new THREE.Quaternion())) {
+        e = new THREE.Euler().setFromQuaternion(
+          new THREE.Quaternion().setFromEuler(e).premultiply(qG));
+      }
+      // Asymmetry: a constant directional bias (like a prevailing wind)
+      // bending growth toward asymDir, stronger higher up.
+      if (gOpt.asymmetry && (gOpt.asymmetry.x || gOpt.asymmetry.z)) {
+        const asymDir = new THREE.Vector3(gOpt.asymmetry.x, 0, gOpt.asymmetry.z).normalize();
+        const asymAngle = 0.03 * y;
+        const up = new THREE.Vector3(0, 1, 0).applyEuler(e);
+        const axis = new THREE.Vector3().crossVectors(up, asymDir);
+        const sinFull = axis.length();
+        if (sinFull > 1e-6) {
+          axis.divideScalar(sinFull);
+          const full = Math.atan2(sinFull, up.dot(asymDir));
+          const clamped = Math.max(-full, Math.min(full, asymAngle));
+          e = new THREE.Euler().setFromQuaternion(
+            new THREE.Quaternion().setFromEuler(e).premultiply(
+              new THREE.Quaternion().setFromAxisAngle(axis, clamped)));
+        }
+      }
+    }
+    return e;
+  }
+
   #meshSkeleton(detail = {}) {
     const sectionStride = Math.max(1, Math.floor(detail.sectionStride ?? 1));
     const segmentFactor = detail.segmentFactor ?? 1;
@@ -466,6 +538,12 @@ export class Tree extends THREE.Group {
     // in both modes, so trees stay seed-exact in 'shared'.
     const rng = this.options.rngMode === 'perBranch' ? branch.rng : this.rng;
 
+    // Stage A — trunk sculpting (level-0 branches only). Stage E — global
+    // pose (whole tree). Read once so the section loop below can apply them.
+    const trunkOpt = this.options.trunk;
+    const useTrunk = !!(trunkOpt && trunkOpt.enabled && branch.level === 0);
+    const gOpt = this.options.global;
+
     const taper = this.#branchParam(branch, 'taper', this.options.branch.taper[branch.level]);
     const twist = this.#branchParam(branch, 'twist', this.options.branch.twist[branch.level]);
     const ovForce = this.#ov(branch)?.force;
@@ -492,16 +570,51 @@ export class Tree extends THREE.Group {
         sectionRadius *= 1 - (i / branch.sectionCount);
       }
 
+      // Stage A: sculpt the trunk radius (level 0 only). Bottom swell fades
+      // from bottomSwell at the base to 1 by swellHeight; surface noise adds
+      // vertical furrows/bumps without consuming the RNG stream.
+      if (useTrunk) {
+        const tT = i / branch.sectionCount;
+        let scale = 1;
+        if (trunkOpt.bottomSwell !== 1 && trunkOpt.swellHeight > 0) {
+          const s = Math.min(1, tT / trunkOpt.swellHeight);
+          scale *= 1 + (trunkOpt.bottomSwell - 1) * (1 - s);
+        }
+        if (trunkOpt.noise > 0) {
+          const n = this.#trunkNoise(branch.path, i) * trunkOpt.noise;
+          scale *= 1 + n * 0.12;
+        }
+        sectionRadius *= scale;
+      }
+
+      // Apply trunk sculpt + global pose to the *displayed* section only.
+      // sectionOrientation stays the local (un-posed) orientation so the
+      // per-section perturbation below never double-counts the pose.
+      const tNorm = i / branch.sectionCount;
+      const sectionPose = this.#applyPose(sectionOrientation, sectionOrigin.y, tNorm, useTrunk, trunkOpt, gOpt);
+
       // Use this information later on when generating child branches
       sections.push({
         origin: sectionOrigin.clone(),
-        orientation: sectionOrientation.clone(),
+        orientation: sectionPose.clone(),
         radius: sectionRadius,
       });
 
       sectionOrigin.add(
-        new THREE.Vector3(0, sectionLength, 0).applyEuler(sectionOrientation),
+        new THREE.Vector3(0, sectionLength, 0).applyEuler(sectionPose),
       );
+
+      // Stage A: lateral bow of the trunk — a smooth bump centered at
+      // bowHeight, displaced along bowDirection. Added as a per-section
+      // increment so the offset accumulates to bow*bump(t).
+      if (useTrunk && trunkOpt.bow) {
+        const tT = i / branch.sectionCount;
+        const bump = Math.exp(-Math.pow((tT - trunkOpt.bowHeight) / 0.25, 2));
+        const dt = 1 / branch.sectionCount;
+        const disp = trunkOpt.bow * bump * dt;
+        sectionOrigin.x += Math.cos(trunkOpt.bowDirection) * disp;
+        sectionOrigin.z += Math.sin(trunkOpt.bowDirection) * disp;
+      }
 
       // Perturb the orientation of the next section randomly. The higher the
       // gnarliness, the larger potential perturbation

@@ -190,6 +190,31 @@ export default class TreeOptions {
       roundedNormals: true,
     };
 
+    // Trunk sculpting (stage A). Affects level-0 branches (the trunk) only.
+    // Lets you bulge the base, bow the midsection, twist it, and add surface
+    // noise so a procedural trunk reads as an ancient tree rather than a
+    // smooth cone.
+    this.trunk = {
+      enabled: true,
+      bottomSwell: 1, // base radius multiplier (1 = none, 1.8 = 80% wider base)
+      swellHeight: 0.25, // fraction of trunk height over which the swell fades to 1
+      bow: 0, // midsection lateral bow (world units at the peak)
+      bowHeight: 0.5, // normalized height (0..1) where the bow peaks
+      bowDirection: 0, // direction of the bow in radians (0 = +X)
+      twist: 0, // trunk twist in radians across the full trunk height
+      noise: 0, // surface noise strength (vertical furrows / bumps)
+    };
+
+    // Global pose (stage E). Applied per-section, scaled by the section's
+    // world height, so the WHOLE tree leans / spirals / grows asymmetrically
+    // coherently instead of each branch doing it independently.
+    this.global = {
+      enabled: true,
+      lean: { x: 0, z: 0 }, // tilt in radians per unit world height
+      twist: 0, // spiral in radians per unit world height
+      asymmetry: { x: 0, z: 0 }, // constant directional growth bias (like wind)
+    };
+
     // Trellis parameters
     this.trellis = {
       // Whether trellis is enabled
