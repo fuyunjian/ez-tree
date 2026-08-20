@@ -58,7 +58,7 @@ export async function createScene(renderer) {
   const progressElement = document.getElementById('loading-text');
 
   logoElement.style.clipPath = `inset(100% 0% 0% 0%)`;
-  progressElement.innerHTML = 'LOADING... 0%';
+  progressElement.innerHTML = '正在加载… 0%';
 
   const treeCount = 100;
   const minDistance = 175;
@@ -89,7 +89,7 @@ export async function createScene(renderer) {
 
       // Update progress UI
       logoElement.style.clipPath = `inset(${100 - progress}% 0% 0% 0%)`;
-      progressElement.innerText = `LOADING... ${progress}%`;
+      progressElement.innerText = `正在加载… ${progress}%`;
 
       // Wait for the next animation frame to continue
       await paintUI();

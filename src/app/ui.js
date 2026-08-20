@@ -332,7 +332,7 @@ function createButton(label, iconKey, onClick) {
     if (!result?.then) return;
 
     button.disabled = true;
-    if (!statusSet) setStatus('Working…');
+    if (!statusSet) setStatus('处理中…');
     result.finally(() => {
       button.disabled = false;
       setContent(label, iconKey);
@@ -476,11 +476,11 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   header.className = 'panel-header';
   header.innerHTML = `
     <div class="panel-grabber" aria-hidden="true"></div>
-    <button class="panel-mobile-toggle" aria-label="Toggle panel">
+    <button class="panel-mobile-toggle" aria-label="切换面板">
       ${icons.chevronUp}
     </button>
     <h1 class="panel-title">EZ Tree</h1>
-    <p class="panel-subtitle">Procedural Tree Generator</p>
+    <p class="panel-subtitle">程序化树木生成器</p>
   `;
   panel.appendChild(header);
 
@@ -495,11 +495,11 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   tabNav.innerHTML = `
     <button class="tab-button active" data-tab="parameters">
       ${icons.tree}
-      <span class="tab-label">Tree</span>
+      <span class="tab-label">树木</span>
     </button>
     <button class="tab-button" data-tab="export">
       ${icons.archive}
-      <span class="tab-label">Export</span>
+      <span class="tab-label">导出</span>
     </button>
   `;
   scrollArea.appendChild(tabNav);
@@ -542,15 +542,15 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     <div class="stats-counts">
       <div class="stats-stat">
         <span class="stats-value" data-stat="triangles">0</span>
-        <span class="stats-label">triangles</span>
+        <span class="stats-label">三角形</span>
       </div>
       <div class="stats-stat">
         <span class="stats-value" data-stat="vertices">0</span>
-        <span class="stats-label">vertices</span>
+        <span class="stats-label">顶点</span>
       </div>
       <div class="stats-stat">
         <span class="stats-value" data-stat="buildtime">–</span>
-        <span class="stats-label">build ms</span>
+        <span class="stats-label">构建耗时 (ms)</span>
       </div>
     </div>
     <div class="lod-switcher"></div>
@@ -572,10 +572,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   const lodButtons = Tree.defaultLODLevels.map((level, i) => {
     const btn = document.createElement('button');
     btn.className = 'lod-button' + (i === 0 ? ' active' : '');
-    btn.textContent = i === 0 ? 'Full' : `LOD${i}`;
+    btn.textContent = i === 0 ? '完整' : `LOD${i}`;
     btn.title = i === 0
-      ? 'Full detail'
-      : `Preview detail level ${i} (switches at ${level.distance} units)`;
+      ? '完整细节'
+      : `预览细节等级 ${i}（在 ${level.distance} 单位距离切换）`;
     btn.addEventListener('click', () => setPreviewLevel(i));
     lodSwitcher.appendChild(btn);
     return btn;
@@ -638,10 +638,28 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   };
 
   // ----- Presets Section -----
-  const presetsSection = createSection('Presets', 'swatch', true);
+  const presetsSection = createSection('预设 (Presets)', 'swatch', true);
 
-  const presetSelect = createSelect('Preset',
-    Object.fromEntries(Object.keys(TreePreset).map(p => [p, p])),
+  const presetDisplayNames = {
+    'Ash Small': '白蜡 小 (Ash Small)',
+    'Ash Medium': '白蜡 中 (Ash Medium)',
+    'Ash Large': '白蜡 大 (Ash Large)',
+    'Aspen Small': '白杨 小 (Aspen Small)',
+    'Aspen Medium': '白杨 中 (Aspen Medium)',
+    'Aspen Large': '白杨 大 (Aspen Large)',
+    'Bush 1': '灌木 1 (Bush 1)',
+    'Bush 2': '灌木 2 (Bush 2)',
+    'Bush 3': '灌木 3 (Bush 3)',
+    'Oak Small': '橡树 小 (Oak Small)',
+    'Oak Medium': '橡树 中 (Oak Medium)',
+    'Oak Large': '橡树 大 (Oak Large)',
+    'Pine Small': '松树 小 (Pine Small)',
+    'Pine Medium': '松树 中 (Pine Medium)',
+    'Pine Large': '松树 大 (Pine Large)',
+    'Trellis': '藤架 (Trellis)',
+  };
+  const presetSelect = createSelect('预设',
+    Object.fromEntries(Object.keys(TreePreset).map(p => [presetDisplayNames[p] || p, p])),
     initialPreset,
     (val) => {
       loadPresetWithTextures(tree, val);
@@ -655,14 +673,14 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   presetsSection.add(presetSelect);
   controls.push({ control: presetSelect, update: () => {} });
 
-  const seedSlider = createSlider('Seed', tree.options.seed, 0, 65536, 1, (val) => {
+  const seedSlider = createSlider('种子', tree.options.seed, 0, 65536, 1, (val) => {
     tree.options.seed = val;
     onChange();
   });
   presetsSection.add(seedSlider);
   controls.push({ control: seedSlider, update: () => seedSlider.setValue(tree.options.seed) });
 
-  const randomSeedBtn = createButton('Random Seed', 'dice', () => {
+  const randomSeedBtn = createButton('随机种子', 'dice', () => {
     tree.options.seed = Math.floor(Math.random() * 65536);
     seedSlider.setValue(tree.options.seed);
     onChange();
@@ -672,44 +690,44 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(presetsSection.element);
 
   // ----- Bark Section -----
-  const barkSection = createSection('Bark', 'cube', false);
+  const barkSection = createSection('树皮 (Bark)', 'cube', false);
 
-  const barkTypeSelect = createSelect('Type', BarkType, tree.options.bark.type, (val) => {
+  const barkTypeSelect = createSelect('类型', BarkType, tree.options.bark.type, (val) => {
     tree.options.bark.type = val;
     onChange();
   });
   barkSection.add(barkTypeSelect);
   controls.push({ control: barkTypeSelect, update: () => barkTypeSelect.setValue(tree.options.bark.type) });
 
-  const barkTintPicker = createColorPicker('Tint', tree.options.bark.tint, (val) => {
+  const barkTintPicker = createColorPicker('色调', tree.options.bark.tint, (val) => {
     tree.options.bark.tint = val;
     onChange();
   });
   barkSection.add(barkTintPicker);
   controls.push({ control: barkTintPicker, update: () => barkTintPicker.setValue(tree.options.bark.tint) });
 
-  const flatShadingToggle = createToggle('Flat Shading', tree.options.bark.flatShading, (val) => {
+  const flatShadingToggle = createToggle('平直着色', tree.options.bark.flatShading, (val) => {
     tree.options.bark.flatShading = val;
     onChange();
   });
   barkSection.add(flatShadingToggle);
   controls.push({ control: flatShadingToggle, update: () => flatShadingToggle.setValue(tree.options.bark.flatShading) });
 
-  const texturedToggle = createToggle('Textured', tree.options.bark.textured, (val) => {
+  const texturedToggle = createToggle('启用纹理', tree.options.bark.textured, (val) => {
     tree.options.bark.textured = val;
     onChange();
   });
   barkSection.add(texturedToggle);
   controls.push({ control: texturedToggle, update: () => texturedToggle.setValue(tree.options.bark.textured) });
 
-  const texScaleXSlider = createSlider('Texture Scale X', tree.options.bark.textureScale.x, 0.5, 5, 0.1, (val) => {
+  const texScaleXSlider = createSlider('纹理缩放 X', tree.options.bark.textureScale.x, 0.5, 5, 0.1, (val) => {
     tree.options.bark.textureScale.x = val;
     onChange();
   });
   barkSection.add(texScaleXSlider);
   controls.push({ control: texScaleXSlider, update: () => texScaleXSlider.setValue(tree.options.bark.textureScale.x) });
 
-  const texScaleYSlider = createSlider('Texture Scale Y', tree.options.bark.textureScale.y, 0.5, 5, 0.1, (val) => {
+  const texScaleYSlider = createSlider('纹理缩放 Y', tree.options.bark.textureScale.y, 0.5, 5, 0.1, (val) => {
     tree.options.bark.textureScale.y = val;
     onChange();
   });
@@ -719,23 +737,27 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(barkSection.element);
 
   // ----- Branches Section -----
-  const branchSection = createSection('Branches', 'share', false);
+  const branchSection = createSection('枝干 (Branches)', 'share', false);
 
-  const treeTypeSelect = createSelect('Tree Type', TreeType, tree.options.type, (val) => {
+  const treeTypeSelect = createSelect('树木类型',
+    { '落叶树 (Deciduous)': 'deciduous', '常绿树 (Evergreen)': 'evergreen' },
+    tree.options.type, (val) => {
     tree.options.type = val;
     onChange();
   });
   branchSection.add(treeTypeSelect);
   controls.push({ control: treeTypeSelect, update: () => treeTypeSelect.setValue(tree.options.type) });
 
-  const levelsSlider = createSlider('Levels', tree.options.branch.levels, 0, 3, 1, (val) => {
+  const levelsSlider = createSlider('层级数', tree.options.branch.levels, 0, 3, 1, (val) => {
     tree.options.branch.levels = val;
     onChange();
   });
   branchSection.add(levelsSlider);
   controls.push({ control: levelsSlider, update: () => levelsSlider.setValue(tree.options.branch.levels) });
 
-  const rngModeSelect = createSelect('RNG Mode', { 'Per Branch': 'perBranch', 'Shared (legacy)': 'shared' }, tree.options.rngMode, (val) => {
+  const rngModeSelect = createSelect('随机数模式',
+    { '每枝独立 (Per Branch)': 'perBranch', '全局共享 (Shared, 旧版)': 'shared' },
+    tree.options.rngMode, (val) => {
     tree.options.rngMode = val;
     onChange();
   });
@@ -743,9 +765,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   controls.push({ control: rngModeSelect, update: () => rngModeSelect.setValue(tree.options.rngMode) });
 
   // Angle subsection
-  const angleSubsection = createSubSection('Angle');
+  const angleSubsection = createSubSection('角度');
   for (let i = 1; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.angle[i], 0, 180, 1, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.angle[i], 0, 180, 1, (val) => {
       tree.options.branch.angle[i] = val;
       onChange();
     });
@@ -755,10 +777,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(angleSubsection);
 
   // Children subsection
-  const childrenSubsection = createSubSection('Children');
+  const childrenSubsection = createSubSection('子枝数');
   const childrenRanges = [[0, 100], [1, 25], [2, 20]];
   childrenRanges.forEach(([level, max]) => {
-    const slider = createSlider(`Level ${level}`, tree.options.branch.children[level], 0, max, 1, (val) => {
+    const slider = createSlider(`层级 ${level}`, tree.options.branch.children[level], 0, max, 1, (val) => {
       tree.options.branch.children[level] = val;
       onChange();
     });
@@ -768,9 +790,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(childrenSubsection);
 
   // Gnarliness subsection
-  const gnarlinessSubsection = createSubSection('Gnarliness');
+  const gnarlinessSubsection = createSubSection('蜿蜒度');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.gnarliness[i], -1, 1, 0.01, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.gnarliness[i], -1, 1, 0.01, (val) => {
       tree.options.branch.gnarliness[i] = val;
       onChange();
     });
@@ -780,16 +802,16 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(gnarlinessSubsection);
 
   // Growth Direction subsection
-  const forceSubsection = createSubSection('Growth Direction');
+  const forceSubsection = createSubSection('生长方向');
   ['x', 'y', 'z'].forEach(axis => {
-    const slider = createSlider(`Direction ${axis.toUpperCase()}`, tree.options.branch.force.direction[axis], -1, 1, 0.01, (val) => {
+    const slider = createSlider(`方向 ${axis.toUpperCase()}`, tree.options.branch.force.direction[axis], -1, 1, 0.01, (val) => {
       tree.options.branch.force.direction[axis] = val;
       onChange();
     });
     forceSubsection.add(slider);
     controls.push({ control: slider, update: () => slider.setValue(tree.options.branch.force.direction[axis]) });
   });
-  const strengthSlider = createSlider('Strength', tree.options.branch.force.strength, -0.1, 0.1, 0.001, (val) => {
+  const strengthSlider = createSlider('强度', tree.options.branch.force.strength, -0.1, 0.1, 0.001, (val) => {
     tree.options.branch.force.strength = val;
     onChange();
   });
@@ -798,9 +820,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(forceSubsection);
 
   // Length subsection
-  const lengthSubsection = createSubSection('Length');
+  const lengthSubsection = createSubSection('长度');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.length[i], 0.1, 500, 0.1, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.length[i], 0.1, 500, 0.1, (val) => {
       tree.options.branch.length[i] = val;
       onChange();
     });
@@ -810,9 +832,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(lengthSubsection);
 
   // Radius subsection
-  const radiusSubsection = createSubSection('Radius');
+  const radiusSubsection = createSubSection('半径');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.radius[i], 0.1, 50, 0.01, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.radius[i], 0.1, 50, 0.01, (val) => {
       tree.options.branch.radius[i] = val;
       onChange();
     });
@@ -822,9 +844,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(radiusSubsection);
 
   // Sections subsection
-  const sectionsSubsection = createSubSection('Sections');
+  const sectionsSubsection = createSubSection('分段数');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.sections[i], 1, 40, 1, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.sections[i], 1, 40, 1, (val) => {
       tree.options.branch.sections[i] = val;
       onChange();
     });
@@ -834,9 +856,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(sectionsSubsection);
 
   // Segments subsection
-  const segmentsSubsection = createSubSection('Segments');
+  const segmentsSubsection = createSubSection('径向段数');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.segments[i], 3, 16, 1, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.segments[i], 3, 16, 1, (val) => {
       tree.options.branch.segments[i] = val;
       onChange();
     });
@@ -846,9 +868,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(segmentsSubsection);
 
   // Start subsection
-  const startSubsection = createSubSection('Start Position');
+  const startSubsection = createSubSection('起始位置');
   for (let i = 1; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.start[i], 0, 1, 0.01, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.start[i], 0, 1, 0.01, (val) => {
       tree.options.branch.start[i] = val;
       onChange();
     });
@@ -858,9 +880,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(startSubsection);
 
   // Taper subsection
-  const taperSubsection = createSubSection('Taper');
+  const taperSubsection = createSubSection('锥度');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.taper[i], 0, 1, 0.01, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.taper[i], 0, 1, 0.01, (val) => {
       tree.options.branch.taper[i] = val;
       onChange();
     });
@@ -870,9 +892,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   branchSection.add(taperSubsection);
 
   // Twist subsection
-  const twistSubsection = createSubSection('Twist');
+  const twistSubsection = createSubSection('扭转');
   for (let i = 0; i <= 3; i++) {
-    const slider = createSlider(`Level ${i}`, tree.options.branch.twist[i], -0.5, 0.5, 0.01, (val) => {
+    const slider = createSlider(`层级 ${i}`, tree.options.branch.twist[i], -0.5, 0.5, 0.01, (val) => {
       tree.options.branch.twist[i] = val;
       onChange();
     });
@@ -884,110 +906,110 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(branchSection.element);
 
   // ----- Trunk Sculpt Section (stage A) -----
-  const trunkSection = createSection('Trunk Sculpt', 'share', false);
+  const trunkSection = createSection('树干塑形 (Trunk Sculpt)', 'share', false);
   const trunkOpt = tree.options.trunk;
 
-  const bottomSwellSlider = createSlider('Bottom Swell', trunkOpt.bottomSwell, 1, 3, 0.01, (val) => {
+  const bottomSwellSlider = createSlider('基部膨大', trunkOpt.bottomSwell, 1, 3, 0.01, (val) => {
     trunkOpt.bottomSwell = val; onChange();
   });
   trunkSection.add(bottomSwellSlider);
   controls.push({ control: bottomSwellSlider, update: () => bottomSwellSlider.setValue(trunkOpt.bottomSwell) });
 
-  const swellHeightSlider = createSlider('Swell Height', trunkOpt.swellHeight, 0.05, 1, 0.01, (val) => {
+  const swellHeightSlider = createSlider('膨大高度', trunkOpt.swellHeight, 0.05, 1, 0.01, (val) => {
     trunkOpt.swellHeight = val; onChange();
   });
   trunkSection.add(swellHeightSlider);
   controls.push({ control: swellHeightSlider, update: () => swellHeightSlider.setValue(trunkOpt.swellHeight) });
 
-  const bowSlider = createSlider('Bow', trunkOpt.bow, 0, 20, 0.1, (val) => {
+  const bowSlider = createSlider('弓弯', trunkOpt.bow, 0, 20, 0.1, (val) => {
     trunkOpt.bow = val; onChange();
   });
   trunkSection.add(bowSlider);
   controls.push({ control: bowSlider, update: () => bowSlider.setValue(trunkOpt.bow) });
 
-  const bowHeightSlider = createSlider('Bow Height', trunkOpt.bowHeight, 0.1, 0.9, 0.01, (val) => {
+  const bowHeightSlider = createSlider('弓弯高度', trunkOpt.bowHeight, 0.1, 0.9, 0.01, (val) => {
     trunkOpt.bowHeight = val; onChange();
   });
   trunkSection.add(bowHeightSlider);
   controls.push({ control: bowHeightSlider, update: () => bowHeightSlider.setValue(trunkOpt.bowHeight) });
 
-  const bowDirSlider = createSlider('Bow Direction', trunkOpt.bowDirection, 0, Math.PI * 2, 0.01, (val) => {
+  const bowDirSlider = createSlider('弓弯方向', trunkOpt.bowDirection, 0, Math.PI * 2, 0.01, (val) => {
     trunkOpt.bowDirection = val; onChange();
   });
   trunkSection.add(bowDirSlider);
   controls.push({ control: bowDirSlider, update: () => bowDirSlider.setValue(trunkOpt.bowDirection) });
 
-  const trunkTwistSlider = createSlider('Twist', trunkOpt.twist, -2, 2, 0.01, (val) => {
+  const trunkTwistSlider = createSlider('扭转', trunkOpt.twist, -2, 2, 0.01, (val) => {
     trunkOpt.twist = val; onChange();
   });
   trunkSection.add(trunkTwistSlider);
   controls.push({ control: trunkTwistSlider, update: () => trunkTwistSlider.setValue(trunkOpt.twist) });
 
-  const trunkNoiseSlider = createSlider('Surface Noise', trunkOpt.noise, 0, 2, 0.01, (val) => {
+  const trunkNoiseSlider = createSlider('表面噪声', trunkOpt.noise, 0, 2, 0.01, (val) => {
     trunkOpt.noise = val; onChange();
   });
   trunkSection.add(trunkNoiseSlider);
   controls.push({ control: trunkNoiseSlider, update: () => trunkNoiseSlider.setValue(trunkOpt.noise) });
 
-  const trunkEnabledToggle = createToggle('Enabled', trunkOpt.enabled, (val) => {
+  const trunkEnabledToggle = createToggle('启用', trunkOpt.enabled, (val) => {
     trunkOpt.enabled = val; onChange();
   });
   trunkSection.add(trunkEnabledToggle);
   controls.push({ control: trunkEnabledToggle, update: () => trunkEnabledToggle.setValue(trunkOpt.enabled) });
 
   // ----- Buttress / Roots (板根) subsection (stage B) -----
-  const buttSubsection = createSubSection('Buttress / Roots (板根)');
+  const buttSubsection = createSubSection('板根 (Buttress / Roots)');
   const buttOpt = trunkOpt.buttress;
 
-  const buttEnabledToggle = createToggle('Enabled', buttOpt.enabled, (val) => {
+  const buttEnabledToggle = createToggle('启用', buttOpt.enabled, (val) => {
     buttOpt.enabled = val; onChange();
   });
   buttSubsection.add(buttEnabledToggle);
   controls.push({ control: buttEnabledToggle, update: () => buttEnabledToggle.setValue(buttOpt.enabled) });
 
-  const buttFlutesSlider = createSlider('Flutes', buttOpt.flutes, 0, 12, 1, (val) => {
+  const buttFlutesSlider = createSlider('棱纹数', buttOpt.flutes, 0, 12, 1, (val) => {
     buttOpt.flutes = val; onChange();
   });
   buttSubsection.add(buttFlutesSlider);
   controls.push({ control: buttFlutesSlider, update: () => buttFlutesSlider.setValue(buttOpt.flutes) });
 
-  const buttStrengthSlider = createSlider('Flute Strength', buttOpt.strength, 0, 1, 0.01, (val) => {
+  const buttStrengthSlider = createSlider('棱纹强度', buttOpt.strength, 0, 1, 0.01, (val) => {
     buttOpt.strength = val; onChange();
   });
   buttSubsection.add(buttStrengthSlider);
   controls.push({ control: buttStrengthSlider, update: () => buttStrengthSlider.setValue(buttOpt.strength) });
 
-  const buttHeightSlider = createSlider('Flute Height', buttOpt.height, 0.05, 1, 0.01, (val) => {
+  const buttHeightSlider = createSlider('棱纹高度', buttOpt.height, 0.05, 1, 0.01, (val) => {
     buttOpt.height = val; onChange();
   });
   buttSubsection.add(buttHeightSlider);
   controls.push({ control: buttHeightSlider, update: () => buttHeightSlider.setValue(buttOpt.height) });
 
-  const buttPhaseSlider = createSlider('Flute Phase', buttOpt.phase, 0, Math.PI * 2, 0.01, (val) => {
+  const buttPhaseSlider = createSlider('棱纹相位', buttOpt.phase, 0, Math.PI * 2, 0.01, (val) => {
     buttOpt.phase = val; onChange();
   });
   buttSubsection.add(buttPhaseSlider);
   controls.push({ control: buttPhaseSlider, update: () => buttPhaseSlider.setValue(buttOpt.phase) });
 
-  const buttRootsSlider = createSlider('Roots', buttOpt.roots, 0, 16, 1, (val) => {
+  const buttRootsSlider = createSlider('外露根数', buttOpt.roots, 0, 16, 1, (val) => {
     buttOpt.roots = val; onChange();
   });
   buttSubsection.add(buttRootsSlider);
   controls.push({ control: buttRootsSlider, update: () => buttRootsSlider.setValue(buttOpt.roots) });
 
-  const buttRootLenSlider = createSlider('Root Length', buttOpt.rootLength, 1, 20, 0.5, (val) => {
+  const buttRootLenSlider = createSlider('根长度', buttOpt.rootLength, 1, 20, 0.5, (val) => {
     buttOpt.rootLength = val; onChange();
   });
   buttSubsection.add(buttRootLenSlider);
   controls.push({ control: buttRootLenSlider, update: () => buttRootLenSlider.setValue(buttOpt.rootLength) });
 
-  const buttRootDepthSlider = createSlider('Root Depth', buttOpt.rootDepth, 0, 8, 0.1, (val) => {
+  const buttRootDepthSlider = createSlider('根深度', buttOpt.rootDepth, 0, 8, 0.1, (val) => {
     buttOpt.rootDepth = val; onChange();
   });
   buttSubsection.add(buttRootDepthSlider);
   controls.push({ control: buttRootDepthSlider, update: () => buttRootDepthSlider.setValue(buttOpt.rootDepth) });
 
-  const buttRootWidthSlider = createSlider('Root Width', buttOpt.rootWidth, 0.1, 1, 0.01, (val) => {
+  const buttRootWidthSlider = createSlider('根宽度', buttOpt.rootWidth, 0.1, 1, 0.01, (val) => {
     buttOpt.rootWidth = val; onChange();
   });
   buttSubsection.add(buttRootWidthSlider);
@@ -996,70 +1018,70 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   trunkSection.add(buttSubsection);
 
   // ----- Deadwood (枯枝/空洞) subsection (stage D) -----
-  const dwSubsection = createSubSection('Deadwood (枯枝/空洞)');
+  const dwSubsection = createSubSection('枯木/空洞 (Deadwood)');
   const dwOpt = trunkOpt.deadwood;
 
-  const dwEnabledToggle = createToggle('Enabled', dwOpt.enabled, (val) => {
+  const dwEnabledToggle = createToggle('启用', dwOpt.enabled, (val) => {
     dwOpt.enabled = val; onChange();
   });
   dwSubsection.add(dwEnabledToggle);
   controls.push({ control: dwEnabledToggle, update: () => dwEnabledToggle.setValue(dwOpt.enabled) });
 
-  const dwHollowStrengthSlider = createSlider('Hollow Strength', dwOpt.hollowStrength, 0, 1, 0.01, (val) => {
+  const dwHollowStrengthSlider = createSlider('空洞强度', dwOpt.hollowStrength, 0, 1, 0.01, (val) => {
     dwOpt.hollowStrength = val; onChange();
   });
   dwSubsection.add(dwHollowStrengthSlider);
   controls.push({ control: dwHollowStrengthSlider, update: () => dwHollowStrengthSlider.setValue(dwOpt.hollowStrength) });
 
-  const dwHollowHeightSlider = createSlider('Hollow Height', dwOpt.hollowHeight, 0.05, 0.9, 0.01, (val) => {
+  const dwHollowHeightSlider = createSlider('空洞高度', dwOpt.hollowHeight, 0.05, 0.9, 0.01, (val) => {
     dwOpt.hollowHeight = val; onChange();
   });
   dwSubsection.add(dwHollowHeightSlider);
   controls.push({ control: dwHollowHeightSlider, update: () => dwHollowHeightSlider.setValue(dwOpt.hollowHeight) });
 
-  const dwHollowWidthSlider = createSlider('Hollow Width', dwOpt.hollowWidth, 0.05, 1, 0.01, (val) => {
+  const dwHollowWidthSlider = createSlider('空洞宽度', dwOpt.hollowWidth, 0.05, 1, 0.01, (val) => {
     dwOpt.hollowWidth = val; onChange();
   });
   dwSubsection.add(dwHollowWidthSlider);
   controls.push({ control: dwHollowWidthSlider, update: () => dwHollowWidthSlider.setValue(dwOpt.hollowWidth) });
 
-  const dwHollowPhaseSlider = createSlider('Hollow Phase', dwOpt.hollowPhase, 0, Math.PI * 2, 0.01, (val) => {
+  const dwHollowPhaseSlider = createSlider('空洞相位', dwOpt.hollowPhase, 0, Math.PI * 2, 0.01, (val) => {
     dwOpt.hollowPhase = val; onChange();
   });
   dwSubsection.add(dwHollowPhaseSlider);
   controls.push({ control: dwHollowPhaseSlider, update: () => dwHollowPhaseSlider.setValue(dwOpt.hollowPhase) });
 
-  const dwCrackCountSlider = createSlider('Crack Count', dwOpt.crackCount, 0, 12, 1, (val) => {
+  const dwCrackCountSlider = createSlider('裂纹数量', dwOpt.crackCount, 0, 12, 1, (val) => {
     dwOpt.crackCount = val; onChange();
   });
   dwSubsection.add(dwCrackCountSlider);
   controls.push({ control: dwCrackCountSlider, update: () => dwCrackCountSlider.setValue(dwOpt.crackCount) });
 
-  const dwCrackDepthSlider = createSlider('Crack Depth', dwOpt.crackDepth, 0, 0.5, 0.01, (val) => {
+  const dwCrackDepthSlider = createSlider('裂纹深度', dwOpt.crackDepth, 0, 0.5, 0.01, (val) => {
     dwOpt.crackDepth = val; onChange();
   });
   dwSubsection.add(dwCrackDepthSlider);
   controls.push({ control: dwCrackDepthSlider, update: () => dwCrackDepthSlider.setValue(dwOpt.crackDepth) });
 
-  const dwCrackWidthSlider = createSlider('Crack Width', dwOpt.crackWidth, 0.01, 0.3, 0.01, (val) => {
+  const dwCrackWidthSlider = createSlider('裂纹宽度', dwOpt.crackWidth, 0.01, 0.3, 0.01, (val) => {
     dwOpt.crackWidth = val; onChange();
   });
   dwSubsection.add(dwCrackWidthSlider);
   controls.push({ control: dwCrackWidthSlider, update: () => dwCrackWidthSlider.setValue(dwOpt.crackWidth) });
 
-  const dwCrackPhaseSlider = createSlider('Crack Phase', dwOpt.crackPhase, 0, Math.PI * 2, 0.01, (val) => {
+  const dwCrackPhaseSlider = createSlider('裂纹相位', dwOpt.crackPhase, 0, Math.PI * 2, 0.01, (val) => {
     dwOpt.crackPhase = val; onChange();
   });
   dwSubsection.add(dwCrackPhaseSlider);
   controls.push({ control: dwCrackPhaseSlider, update: () => dwCrackPhaseSlider.setValue(dwOpt.crackPhase) });
 
-  const dwDeadChanceSlider = createSlider('Dead Branch Chance', dwOpt.deadBranchChance, 0, 1, 0.01, (val) => {
+  const dwDeadChanceSlider = createSlider('枯枝概率', dwOpt.deadBranchChance, 0, 1, 0.01, (val) => {
     dwOpt.deadBranchChance = val; onChange();
   });
   dwSubsection.add(dwDeadChanceSlider);
   controls.push({ control: dwDeadChanceSlider, update: () => dwDeadChanceSlider.setValue(dwOpt.deadBranchChance) });
 
-  const dwDeadLenSlider = createSlider('Dead Branch Length', dwOpt.deadBranchLength, 0.2, 1, 0.01, (val) => {
+  const dwDeadLenSlider = createSlider('枯枝长度', dwOpt.deadBranchLength, 0.2, 1, 0.01, (val) => {
     dwOpt.deadBranchLength = val; onChange();
   });
   dwSubsection.add(dwDeadLenSlider);
@@ -1070,40 +1092,40 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(trunkSection.element);
 
   // ----- Global Pose Section (stage E) -----
-  const globalSection = createSection('Global Pose', 'share', false);
+  const globalSection = createSection('整体姿态 (Global Pose)', 'share', false);
   const gOpt = tree.options.global;
 
-  const leanXSlider = createSlider('Lean X', gOpt.lean.x, -0.05, 0.05, 0.001, (val) => {
+  const leanXSlider = createSlider('倾斜 X', gOpt.lean.x, -0.05, 0.05, 0.001, (val) => {
     gOpt.lean.x = val; onChange();
   });
   globalSection.add(leanXSlider);
   controls.push({ control: leanXSlider, update: () => leanXSlider.setValue(gOpt.lean.x) });
 
-  const leanZSlider = createSlider('Lean Z', gOpt.lean.z, -0.05, 0.05, 0.001, (val) => {
+  const leanZSlider = createSlider('倾斜 Z', gOpt.lean.z, -0.05, 0.05, 0.001, (val) => {
     gOpt.lean.z = val; onChange();
   });
   globalSection.add(leanZSlider);
   controls.push({ control: leanZSlider, update: () => leanZSlider.setValue(gOpt.lean.z) });
 
-  const globalTwistSlider = createSlider('Twist', gOpt.twist, -0.05, 0.05, 0.001, (val) => {
+  const globalTwistSlider = createSlider('扭转', gOpt.twist, -0.05, 0.05, 0.001, (val) => {
     gOpt.twist = val; onChange();
   });
   globalSection.add(globalTwistSlider);
   controls.push({ control: globalTwistSlider, update: () => globalTwistSlider.setValue(gOpt.twist) });
 
-  const asymXSlider = createSlider('Asymmetry X', gOpt.asymmetry.x, -0.05, 0.05, 0.001, (val) => {
+  const asymXSlider = createSlider('不对称 X', gOpt.asymmetry.x, -0.05, 0.05, 0.001, (val) => {
     gOpt.asymmetry.x = val; onChange();
   });
   globalSection.add(asymXSlider);
   controls.push({ control: asymXSlider, update: () => asymXSlider.setValue(gOpt.asymmetry.x) });
 
-  const asymZSlider = createSlider('Asymmetry Z', gOpt.asymmetry.z, -0.05, 0.05, 0.001, (val) => {
+  const asymZSlider = createSlider('不对称 Z', gOpt.asymmetry.z, -0.05, 0.05, 0.001, (val) => {
     gOpt.asymmetry.z = val; onChange();
   });
   globalSection.add(asymZSlider);
   controls.push({ control: asymZSlider, update: () => asymZSlider.setValue(gOpt.asymmetry.z) });
 
-  const globalEnabledToggle = createToggle('Enabled', gOpt.enabled, (val) => {
+  const globalEnabledToggle = createToggle('启用', gOpt.enabled, (val) => {
     gOpt.enabled = val; onChange();
   });
   globalSection.add(globalEnabledToggle);
@@ -1172,7 +1194,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(globalSection.element);
 
   // ----- Selected Branch Section (per-branch editing) -----
-  const selectedSection = createSection('Selected Branch', 'share', false);
+  const selectedSection = createSection('选中枝干 (Selected Branch)', 'share', false);
   const selectedContent = selectedSection.content;
 
   function clearSelectedControls() {
@@ -1192,7 +1214,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       const hint = document.createElement('div');
       hint.className = 'control-row';
       hint.style.opacity = '0.7';
-      hint.textContent = 'Click a branch in the scene to edit it individually.';
+      hint.textContent = '点击场景中的枝干，即可单独编辑它。';
       selectedContent.appendChild(hint);
       return;
     }
@@ -1201,12 +1223,12 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     if (!info) {
       const hint = document.createElement('div');
       hint.className = 'control-row';
-      hint.textContent = 'Branch not found.';
+      hint.textContent = '未找到该枝干。';
       selectedContent.appendChild(hint);
       return;
     }
 
-    const pathDisplay = createDisplay('Path', info.path);
+    const pathDisplay = createDisplay('路径', info.path);
     selectedContent.appendChild(pathDisplay.element);
 
     const makeOverrideSlider = (label, key, value, min, max, step) => {
@@ -1218,21 +1240,21 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       return slider;
     };
 
-    makeOverrideSlider('Length', 'length', info.length, 0.1, 500, 0.1);
-    makeOverrideSlider('Radius', 'radius', info.radius, 0.05, 50, 0.05);
-    makeOverrideSlider('Angle', 'angle', info.angle, 0, 180, 1);
-    makeOverrideSlider('Children', 'children', info.children, 0, 50, 1);
-    makeOverrideSlider('Gnarliness', 'gnarliness', info.gnarliness, -1, 1, 0.01);
-    makeOverrideSlider('Taper', 'taper', info.taper, 0, 1, 0.01);
-    makeOverrideSlider('Twist', 'twist', info.twist, -1, 1, 0.01);
-    makeOverrideSlider('Sections', 'sections', info.sections, 1, 40, 1);
-    makeOverrideSlider('Start', 'start', info.start, 0, 1, 0.01);
+    makeOverrideSlider('长度', 'length', info.length, 0.1, 500, 0.1);
+    makeOverrideSlider('半径', 'radius', info.radius, 0.05, 50, 0.05);
+    makeOverrideSlider('角度', 'angle', info.angle, 0, 180, 1);
+    makeOverrideSlider('子枝数', 'children', info.children, 0, 50, 1);
+    makeOverrideSlider('蜿蜒度', 'gnarliness', info.gnarliness, -1, 1, 0.01);
+    makeOverrideSlider('锥度', 'taper', info.taper, 0, 1, 0.01);
+    makeOverrideSlider('扭转', 'twist', info.twist, -1, 1, 0.01);
+    makeOverrideSlider('分段数', 'sections', info.sections, 1, 40, 1);
+    makeOverrideSlider('起始', 'start', info.start, 0, 1, 0.01);
 
     // ----- Curve (bend) control points -----
     const curveHeader = document.createElement('div');
     curveHeader.className = 'control-row';
     curveHeader.style.fontWeight = '600';
-    curveHeader.textContent = 'Bend Points';
+    curveHeader.textContent = '弯曲控制点';
     selectedContent.appendChild(curveHeader);
 
     const curvePoints = (tree.options.branch.overrides[info.path]?.curve) || [];
@@ -1240,7 +1262,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
     curvePoints.forEach((cp, ci) => {
       const tSlider = createSlider(
-        `#${ci} position`,
+        `#${ci} 位置`,
         cp.t ?? 0.5, 0, 1, 0.01,
         (val) => { cp.t = val; tree.setBranchOverride(info.path, 'curve', curvePoints); onChange(); },
       );
@@ -1248,7 +1270,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
       ['x', 'y', 'z'].forEach((axis) => {
         const dSlider = createSlider(
-          `#${ci} dir ${axis.toUpperCase()}`,
+          `#${ci} 方向 ${axis.toUpperCase()}`,
           cp.dir?.[axis] ?? 0, -1, 1, 0.01,
           (val) => {
             if (!cp.dir) cp.dir = { x: 0, y: 0, z: 0 };
@@ -1261,13 +1283,13 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       });
 
       const sSlider = createSlider(
-        `#${ci} strength`,
+        `#${ci} 强度`,
         cp.strength ?? 0.5, 0, 2, 0.01,
         (val) => { cp.strength = val; tree.setBranchOverride(info.path, 'curve', curvePoints); onChange(); },
       );
       selectedContent.appendChild(sSlider.element);
 
-      const rmBtn = createButton('Remove Point', 'folderOpen', () => {
+      const rmBtn = createButton('移除控制点', 'folderOpen', () => {
         curvePoints.splice(ci, 1);
         tree.setBranchOverride(info.path, 'curve', curvePoints);
         onChange();
@@ -1276,7 +1298,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       selectedContent.appendChild(rmBtn.element);
     });
 
-    const addBtn = createButton('Add Bend Point', 'share', () => {
+    const addBtn = createButton('添加弯曲控制点', 'share', () => {
       curvePoints.push({ t: 0.5, dir: { x: 0, y: 0, z: 1 }, strength: 0.5 });
       tree.setBranchOverride(info.path, 'curve', curvePoints);
       onChange();
@@ -1284,7 +1306,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     });
     selectedContent.appendChild(addBtn.element);
 
-    const clearBtn = createButton('Clear Override', 'folderOpen', () => {
+    const clearBtn = createButton('清除覆盖', 'folderOpen', () => {
       if (tree.options.branch.overrides[info.path]) {
         delete tree.options.branch.overrides[info.path];
       }
@@ -1307,37 +1329,41 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   buildSelectedBranchPanel(null);
 
   // ----- Leaves Section -----
-  const leavesSection = createSection('Leaves', 'sparkles', false);
+  const leavesSection = createSection('树叶 (Leaves)', 'sparkles', false);
 
-  const leafTypeSelect = createSelect('Type', LeafType, tree.options.leaves.type, (val) => {
+  const leafTypeSelect = createSelect('类型',
+    { '白蜡 (Ash)': 'ash', '白杨 (Aspen)': 'aspen', '橡树 (Oak)': 'oak', '松树 (Pine)': 'pine' },
+    tree.options.leaves.type, (val) => {
     tree.options.leaves.type = val;
     onChange();
   });
   leavesSection.add(leafTypeSelect);
   controls.push({ control: leafTypeSelect, update: () => leafTypeSelect.setValue(tree.options.leaves.type) });
 
-  const leafTintPicker = createColorPicker('Tint', tree.options.leaves.tint, (val) => {
+  const leafTintPicker = createColorPicker('色调', tree.options.leaves.tint, (val) => {
     tree.options.leaves.tint = val;
     onChange();
   });
   leavesSection.add(leafTintPicker);
   controls.push({ control: leafTintPicker, update: () => leafTintPicker.setValue(tree.options.leaves.tint) });
 
-  const billboardSelect = createSelect('Billboard', Billboard, tree.options.leaves.billboard, (val) => {
+  const billboardSelect = createSelect('公告板',
+    { '单片 (Single)': 'single', '双片 (Double)': 'double' },
+    tree.options.leaves.billboard, (val) => {
     tree.options.leaves.billboard = val;
     onChange();
   });
   leavesSection.add(billboardSelect);
   controls.push({ control: billboardSelect, update: () => billboardSelect.setValue(tree.options.leaves.billboard) });
 
-  const leafAngleSlider = createSlider('Angle', tree.options.leaves.angle, 0, 100, 1, (val) => {
+  const leafAngleSlider = createSlider('角度', tree.options.leaves.angle, 0, 100, 1, (val) => {
     tree.options.leaves.angle = val;
     onChange();
   });
   leavesSection.add(leafAngleSlider);
   controls.push({ control: leafAngleSlider, update: () => leafAngleSlider.setValue(tree.options.leaves.angle) });
 
-  const leafCountSlider = createSlider('Count', tree.options.leaves.count, 0, 1000, 1, (val) => {
+  const leafCountSlider = createSlider('数量', tree.options.leaves.count, 0, 1000, 1, (val) => {
     tree.options.leaves.count = val;
     onChange();
   });
@@ -1346,7 +1372,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   // Lowest branch level that sprouts leaves (inclusive). Lowering it makes
   // more branch levels carry leaves, filling the canopy on large trees.
-  const leafLevelSlider = createSlider('Min Level', tree.options.leaves.level, 1, 3, 1, (val) => {
+  const leafLevelSlider = createSlider('最小层级', tree.options.leaves.level, 1, 3, 1, (val) => {
     tree.options.leaves.level = val;
     onChange();
   });
@@ -1354,42 +1380,42 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   controls.push({ control: leafLevelSlider, update: () => leafLevelSlider.setValue(tree.options.leaves.level) });
 
   // Density scaling: longer branches get proportionally more leaves.
-  const leafDensitySlider = createSlider('Density', tree.options.leaves.density, 0, 2, 0.05, (val) => {
+  const leafDensitySlider = createSlider('密度', tree.options.leaves.density, 0, 2, 0.05, (val) => {
     tree.options.leaves.density = val;
     onChange();
   });
   leavesSection.add(leafDensitySlider);
   controls.push({ control: leafDensitySlider, update: () => leafDensitySlider.setValue(tree.options.leaves.density) });
 
-  const leafStartSlider = createSlider('Start', tree.options.leaves.start, 0, 1, 0.01, (val) => {
+  const leafStartSlider = createSlider('起始', tree.options.leaves.start, 0, 1, 0.01, (val) => {
     tree.options.leaves.start = val;
     onChange();
   });
   leavesSection.add(leafStartSlider);
   controls.push({ control: leafStartSlider, update: () => leafStartSlider.setValue(tree.options.leaves.start) });
 
-  const leafSizeSlider = createSlider('Size', tree.options.leaves.size, 0, 30, 0.1, (val) => {
+  const leafSizeSlider = createSlider('大小', tree.options.leaves.size, 0, 30, 0.1, (val) => {
     tree.options.leaves.size = val;
     onChange();
   });
   leavesSection.add(leafSizeSlider);
   controls.push({ control: leafSizeSlider, update: () => leafSizeSlider.setValue(tree.options.leaves.size) });
 
-  const leafVarianceSlider = createSlider('Size Variance', tree.options.leaves.sizeVariance, 0, 1, 0.01, (val) => {
+  const leafVarianceSlider = createSlider('大小变化', tree.options.leaves.sizeVariance, 0, 1, 0.01, (val) => {
     tree.options.leaves.sizeVariance = val;
     onChange();
   });
   leavesSection.add(leafVarianceSlider);
   controls.push({ control: leafVarianceSlider, update: () => leafVarianceSlider.setValue(tree.options.leaves.sizeVariance) });
 
-  const alphaTestSlider = createSlider('Alpha Test', tree.options.leaves.alphaTest, 0, 1, 0.01, (val) => {
+  const alphaTestSlider = createSlider('Alpha 测试', tree.options.leaves.alphaTest, 0, 1, 0.01, (val) => {
     tree.options.leaves.alphaTest = val;
     onChange();
   });
   leavesSection.add(alphaTestSlider);
   controls.push({ control: alphaTestSlider, update: () => alphaTestSlider.setValue(tree.options.leaves.alphaTest) });
 
-  const roundedNormalsToggle = createToggle('Rounded Normals', tree.options.leaves.roundedNormals, (val) => {
+  const roundedNormalsToggle = createToggle('圆滑法线', tree.options.leaves.roundedNormals, (val) => {
     tree.options.leaves.roundedNormals = val;
     onChange();
   });
@@ -1397,40 +1423,40 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   controls.push({ control: roundedNormalsToggle, update: () => roundedNormalsToggle.setValue(tree.options.leaves.roundedNormals) });
 
   // ----- Cloud Slab (云片) subsection (stage C) -----
-  const slabSubsection = createSubSection('Cloud Slab (云片)');
+  const slabSubsection = createSubSection('云片叶簇 (Cloud Slab)');
   const slabOpt = tree.options.leaves.slab;
 
-  const slabEnabledToggle = createToggle('Enabled', slabOpt.enabled, (val) => {
+  const slabEnabledToggle = createToggle('启用', slabOpt.enabled, (val) => {
     slabOpt.enabled = val; onChange();
   });
   slabSubsection.add(slabEnabledToggle);
   controls.push({ control: slabEnabledToggle, update: () => slabEnabledToggle.setValue(slabOpt.enabled) });
 
-  const slabRadiusSlider = createSlider('Radius', slabOpt.radius, 1, 20, 0.5, (val) => {
+  const slabRadiusSlider = createSlider('半径', slabOpt.radius, 1, 20, 0.5, (val) => {
     slabOpt.radius = val; onChange();
   });
   slabSubsection.add(slabRadiusSlider);
   controls.push({ control: slabRadiusSlider, update: () => slabRadiusSlider.setValue(slabOpt.radius) });
 
-  const slabThicknessSlider = createSlider('Thickness', slabOpt.thickness, 0.2, 5, 0.1, (val) => {
+  const slabThicknessSlider = createSlider('厚度', slabOpt.thickness, 0.2, 5, 0.1, (val) => {
     slabOpt.thickness = val; onChange();
   });
   slabSubsection.add(slabThicknessSlider);
   controls.push({ control: slabThicknessSlider, update: () => slabThicknessSlider.setValue(slabOpt.thickness) });
 
-  const slabLayersSlider = createSlider('Layers', slabOpt.layers, 1, 5, 1, (val) => {
+  const slabLayersSlider = createSlider('层数', slabOpt.layers, 1, 5, 1, (val) => {
     slabOpt.layers = val; onChange();
   });
   slabSubsection.add(slabLayersSlider);
   controls.push({ control: slabLayersSlider, update: () => slabLayersSlider.setValue(slabOpt.layers) });
 
-  const slabTiltSlider = createSlider('Tilt (°)', slabOpt.tilt, 0, 40, 1, (val) => {
+  const slabTiltSlider = createSlider('倾斜角 (°)', slabOpt.tilt, 0, 40, 1, (val) => {
     slabOpt.tilt = val; onChange();
   });
   slabSubsection.add(slabTiltSlider);
   controls.push({ control: slabTiltSlider, update: () => slabTiltSlider.setValue(slabOpt.tilt) });
 
-  const slabSegmentsSlider = createSlider('Segments', slabOpt.segments, 6, 20, 1, (val) => {
+  const slabSegmentsSlider = createSlider('径向段数', slabOpt.segments, 6, 20, 1, (val) => {
     slabOpt.segments = val; onChange();
   });
   slabSubsection.add(slabSegmentsSlider);
@@ -1441,16 +1467,16 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(leavesSection.element);
 
   // ----- Trellis Section -----
-  const trellisSection = createSection('Trellis', 'share', false);
+  const trellisSection = createSection('藤架 (Trellis)', 'share', false);
 
-  const trellisEnabledToggle = createToggle('Enabled', tree.options.trellis.enabled, (val) => {
+  const trellisEnabledToggle = createToggle('启用', tree.options.trellis.enabled, (val) => {
     tree.options.trellis.enabled = val;
     onChange();
   });
   trellisSection.add(trellisEnabledToggle);
   controls.push({ control: trellisEnabledToggle, update: () => trellisEnabledToggle.setValue(tree.options.trellis.enabled) });
 
-  const trellisVisibleToggle = createToggle('Visible', tree.options.trellis.visible, (val) => {
+  const trellisVisibleToggle = createToggle('可见', tree.options.trellis.visible, (val) => {
     tree.options.trellis.visible = val;
     onChange();
   });
@@ -1458,7 +1484,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   controls.push({ control: trellisVisibleToggle, update: () => trellisVisibleToggle.setValue(tree.options.trellis.visible) });
 
   // Position subsection
-  const trellisPositionSubsection = createSubSection('Position');
+  const trellisPositionSubsection = createSubSection('位置');
   const trellisPosXSlider = createSlider('X', tree.options.trellis.position.x, -20, 20, 0.1, (val) => {
     tree.options.trellis.position.x = val;
     onChange();
@@ -1482,22 +1508,22 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   trellisSection.add(trellisPositionSubsection);
 
   // Dimensions subsection
-  const trellisDimensionsSubsection = createSubSection('Dimensions');
-  const trellisWidthSlider = createSlider('Width', tree.options.trellis.width, 1, 50, 0.5, (val) => {
+  const trellisDimensionsSubsection = createSubSection('尺寸');
+  const trellisWidthSlider = createSlider('宽度', tree.options.trellis.width, 1, 50, 0.5, (val) => {
     tree.options.trellis.width = val;
     onChange();
   });
   trellisDimensionsSubsection.add(trellisWidthSlider);
   controls.push({ control: trellisWidthSlider, update: () => trellisWidthSlider.setValue(tree.options.trellis.width) });
 
-  const trellisHeightSlider = createSlider('Height', tree.options.trellis.height, 1, 50, 0.5, (val) => {
+  const trellisHeightSlider = createSlider('高度', tree.options.trellis.height, 1, 50, 0.5, (val) => {
     tree.options.trellis.height = val;
     onChange();
   });
   trellisDimensionsSubsection.add(trellisHeightSlider);
   controls.push({ control: trellisHeightSlider, update: () => trellisHeightSlider.setValue(tree.options.trellis.height) });
 
-  const trellisSpacingSlider = createSlider('Spacing', tree.options.trellis.spacing, 0.5, 10, 0.1, (val) => {
+  const trellisSpacingSlider = createSlider('间距', tree.options.trellis.spacing, 0.5, 10, 0.1, (val) => {
     tree.options.trellis.spacing = val;
     onChange();
   });
@@ -1506,22 +1532,22 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   trellisSection.add(trellisDimensionsSubsection);
 
   // Force subsection
-  const trellisForceSubsection = createSubSection('Force');
-  const trellisStrengthSlider = createSlider('Strength', tree.options.trellis.force.strength, 0, 0.2, 0.001, (val) => {
+  const trellisForceSubsection = createSubSection('作用力');
+  const trellisStrengthSlider = createSlider('强度', tree.options.trellis.force.strength, 0, 0.2, 0.001, (val) => {
     tree.options.trellis.force.strength = val;
     onChange();
   });
   trellisForceSubsection.add(trellisStrengthSlider);
   controls.push({ control: trellisStrengthSlider, update: () => trellisStrengthSlider.setValue(tree.options.trellis.force.strength) });
 
-  const trellisMaxDistSlider = createSlider('Max Distance', tree.options.trellis.force.maxDistance, 0.5, 20, 0.1, (val) => {
+  const trellisMaxDistSlider = createSlider('最大距离', tree.options.trellis.force.maxDistance, 0.5, 20, 0.1, (val) => {
     tree.options.trellis.force.maxDistance = val;
     onChange();
   });
   trellisForceSubsection.add(trellisMaxDistSlider);
   controls.push({ control: trellisMaxDistSlider, update: () => trellisMaxDistSlider.setValue(tree.options.trellis.force.maxDistance) });
 
-  const trellisFalloffSlider = createSlider('Falloff', tree.options.trellis.force.falloff, 0.1, 3, 0.1, (val) => {
+  const trellisFalloffSlider = createSlider('衰减', tree.options.trellis.force.falloff, 0.1, 3, 0.1, (val) => {
     tree.options.trellis.force.falloff = val;
     onChange();
   });
@@ -1530,15 +1556,15 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   trellisSection.add(trellisForceSubsection);
 
   // Appearance subsection
-  const trellisAppearanceSubsection = createSubSection('Appearance');
-  const trellisCylinderRadiusSlider = createSlider('Cylinder Radius', tree.options.trellis.cylinderRadius, 0.01, 0.5, 0.01, (val) => {
+  const trellisAppearanceSubsection = createSubSection('外观');
+  const trellisCylinderRadiusSlider = createSlider('圆柱半径', tree.options.trellis.cylinderRadius, 0.01, 0.5, 0.01, (val) => {
     tree.options.trellis.cylinderRadius = val;
     onChange();
   });
   trellisAppearanceSubsection.add(trellisCylinderRadiusSlider);
   controls.push({ control: trellisCylinderRadiusSlider, update: () => trellisCylinderRadiusSlider.setValue(tree.options.trellis.cylinderRadius) });
 
-  const trellisColorPicker = createColorPicker('Color', tree.options.trellis.color, (val) => {
+  const trellisColorPicker = createColorPicker('颜色', tree.options.trellis.color, (val) => {
     tree.options.trellis.color = val;
     onChange();
   });
@@ -1549,15 +1575,15 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(trellisSection.element);
 
   // ----- Camera Section -----
-  const cameraSection = createSection('Camera', 'videoCamera', false);
+  const cameraSection = createSection('相机 (Camera)', 'videoCamera', false);
 
-  const autoRotateToggle = createToggle('Auto Rotate', orbitControls.autoRotate, (val) => {
+  const autoRotateToggle = createToggle('自动旋转', orbitControls.autoRotate, (val) => {
     orbitControls.autoRotate = val;
   });
   cameraSection.add(autoRotateToggle);
   controls.push({ control: autoRotateToggle, update: () => autoRotateToggle.setValue(orbitControls.autoRotate) });
 
-  const rotateSpeedSlider = createSlider('Rotate Speed', orbitControls.autoRotateSpeed, 0, 2, 0.1, (val) => {
+  const rotateSpeedSlider = createSlider('旋转速度', orbitControls.autoRotateSpeed, 0, 2, 0.1, (val) => {
     orbitControls.autoRotateSpeed = val;
   });
   cameraSection.add(rotateSpeedSlider);
@@ -1566,15 +1592,15 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(cameraSection.element);
 
   // ----- Environment Section -----
-  const environmentSection = createSection('Environment', 'sun', false);
+  const environmentSection = createSection('环境 (Environment)', 'sun', false);
 
-  const sunAzimuthSlider = createSlider('Sun Angle', environment.skybox.sunAzimuth, 0, 360, 1, (val) => {
+  const sunAzimuthSlider = createSlider('太阳角度', environment.skybox.sunAzimuth, 0, 360, 1, (val) => {
     environment.skybox.sunAzimuth = val;
   });
   environmentSection.add(sunAzimuthSlider);
   controls.push({ control: sunAzimuthSlider, update: () => sunAzimuthSlider.setValue(environment.skybox.sunAzimuth) });
 
-  const grassCountSlider = createSlider('Grass Count', environment.grass.instanceCount, 0, 25000, 100, (val) => {
+  const grassCountSlider = createSlider('草地数量', environment.grass.instanceCount, 0, 25000, 100, (val) => {
     environment.grass.instanceCount = val;
   });
   environmentSection.add(grassCountSlider);
@@ -1583,18 +1609,18 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   parametersTab.appendChild(environmentSection.element);
 
   // ----- Info Section -----
-  const infoSection = createSection('Info', 'info', false);
+  const infoSection = createSection('信息 (Info)', 'info', false);
 
-  const vertexDisplay = createDisplay('Vertices', tree.vertexCount, (v) => Math.round(v).toLocaleString());
+  const vertexDisplay = createDisplay('顶点数', tree.vertexCount, (v) => Math.round(v).toLocaleString());
   infoSection.add(vertexDisplay);
 
-  const triangleDisplay = createDisplay('Triangles', tree.triangleCount, (v) => Math.round(v).toLocaleString());
+  const triangleDisplay = createDisplay('三角形数', tree.triangleCount, (v) => Math.round(v).toLocaleString());
   infoSection.add(triangleDisplay);
 
-  const versionDisplay = createDisplay('Version', version);
+  const versionDisplay = createDisplay('版本', version);
   infoSection.add(versionDisplay);
 
-  const aboutBtn = createButton('About', 'info', () => {
+  const aboutBtn = createButton('关于', 'info', () => {
     document.getElementById('aboutOverlay').classList.add('active');
   });
   infoSection.add(aboutBtn);
@@ -1617,9 +1643,9 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Export Tab Content
   // ============================================================================
 
-  const exportSection = createSection('Save & Load', 'folder', true);
+  const exportSection = createSection('保存与加载 (Save & Load)', 'folder', true);
 
-  const savePresetBtn = createButton('Save Preset', 'document', () => {
+  const savePresetBtn = createButton('保存预设', 'document', () => {
     const link = document.getElementById('downloadLink');
     const json = JSON.stringify(tree.options, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -1629,14 +1655,14 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   });
   exportSection.add(savePresetBtn);
 
-  const loadPresetBtn = createButton('Load Preset', 'folderOpen', () => {
+  const loadPresetBtn = createButton('加载预设', 'folderOpen', () => {
     document.getElementById('fileInput').click();
   });
   exportSection.add(loadPresetBtn);
 
   exportTab.appendChild(exportSection.element);
 
-  const exportModelsSection = createSection('Export Models', 'cubeTransparent', true);
+  const exportModelsSection = createSection('导出模型 (Export Models)', 'cubeTransparent', true);
 
   /**
    * GLTFExporter aborts on textures whose image never loaded (e.g. the
@@ -1662,8 +1688,8 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     return () => restores.forEach((restore) => restore());
   }
 
-  const exportGlbBtn = createButton('Export GLB (Full Detail)', 'download', async ({ setStatus }) => {
-    setStatus('Exporting GLB…');
+  const exportGlbBtn = createButton('导出 GLB（完整细节）', 'download', async ({ setStatus }) => {
+    setStatus('正在导出 GLB…');
     // Export at full detail regardless of the active LOD preview
     const restoreLevel = previewLevel;
     if (restoreLevel !== 0) {
@@ -1691,12 +1717,12 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   });
   exportModelsSection.add(exportGlbBtn);
 
-  const exportLodsBtn = createButton('Export LODs (ZIP)', 'archive', async ({ setStatus }) => {
+  const exportLodsBtn = createButton('导出 LOD 包 (ZIP)', 'archive', async ({ setStatus }) => {
     const restoreTextures = stripBrokenTextures(tree);
     try {
       const files = {};
       for (let i = 0; i < Tree.defaultLODLevels.length; i++) {
-        setStatus(`Exporting LOD ${i + 1}/${Tree.defaultLODLevels.length}…`);
+        setStatus(`正在导出 LOD ${i + 1}/${Tree.defaultLODLevels.length}…`);
         await paint();
 
         const { detail } = Tree.defaultLODLevels[i];
@@ -1721,7 +1747,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
         }
       }
 
-      setStatus('Zipping…');
+      setStatus('正在压缩…');
       await paint();
 
       const blob = new Blob([zipSync(files)], { type: 'application/zip' });
@@ -1737,8 +1763,8 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   });
   exportModelsSection.add(exportLodsBtn);
 
-  const exportPngBtn = createButton('Export PNG', 'photo', async ({ setStatus }) => {
-    setStatus('Exporting PNG…');
+  const exportPngBtn = createButton('导出 PNG', 'photo', async ({ setStatus }) => {
+    setStatus('正在导出 PNG…');
     await paint();
 
     renderer.setClearColor(0, 0);
@@ -1782,7 +1808,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   const footer = document.createElement('div');
   footer.className = 'panel-footer';
   footer.innerHTML = `
-    <p class="panel-footer-heading">Enjoying EZ-Tree? Try my other assets</p>
+    <p class="panel-footer-heading">喜欢 EZ-Tree？试试我的其他作品</p>
     <a href="https://threejsroadmap.com/assets/threejs-water-pro?utm_source=eztree" target="_blank" class="panel-footer-link">
       🌊 Three.js Water Pro
     </a>
