@@ -45,7 +45,9 @@ export async function createScene(renderer) {
   const tree = new Tree();
   // Per-branch RNG so individual overrides never disturb sibling branches.
   tree.options.rngMode = 'perBranch';
-  loadPresetWithTextures(tree, 'Ash Medium');
+  // loadPresetWithTextures is async (generateAsync yields to the browser);
+  // await it so the hero tree is fully built before the UI/scene read it.
+  await loadPresetWithTextures(tree, 'Ash Medium');
   tree.castShadow = true;
   tree.receiveShadow = true;
   scene.add(tree);

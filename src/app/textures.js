@@ -83,19 +83,61 @@ export function getLeafMap(type) {
 }
 
 /**
+ * Builds (and caches) a THREE.Texture from a data-URL string. Used for
+ * user-uploaded custom bark/leaf textures. Returns null for empty/invalid input.
+ * @param {string} dataURL
+ * @param {{srgb?: boolean, premultiplyAlpha?: boolean}} [opts]
+ */
+const customTexCache = new Map();
+function textureFromDataURL(dataURL, { srgb = true, premultiplyAlpha = false } = {}) {
+  if (!dataURL || typeof dataURL !== 'string') return null;
+  if (customTexCache.has(dataURL)) return customTexCache.get(dataURL);
+  const t = textureLoader.load(
+    dataURL,
+    undefined,
+    undefined,
+    () => {
+      console.warn('Failed to load custom texture from data URL; skipping.');
+      customTexCache.delete(dataURL);
+    },
+  );
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  if (premultiplyAlpha) t.premultiplyAlpha = true;
+  customTexCache.set(dataURL, t);
+  return t;
+}
+
+/**
  * Assigns bark + leaf textures onto the tree's options based on its current
  * `bark.type` and `leaves.type` identifiers. Call this before `tree.generate()`
- * whenever the type strings change.
+ * whenever the type strings change. User-uploaded custom textures
+ * (`bark.customColor` / `leaves.customMap` data URLs) take precedence over the
+ * catalog textures.
  * @param {import('@dgreenheck/ez-tree').Tree} tree
  */
 export function applyTreeTextures(tree) {
+  // Saved preset files may serialize bark.maps as null (THREE.Texture can't be
+  // JSON-encoded), which would otherwise make the assignments below throw and
+  // abort the whole generate. Re-init the holder if it's missing/non-object.
+  if (!tree.options.bark.maps || typeof tree.options.bark.maps !== 'object') {
+    tree.options.bark.maps = { color: null, ao: null, normal: null, roughness: null };
+  }
   const barkMaps = getBarkMaps(tree.options.bark.type);
   if (barkMaps) {
-    tree.options.bark.maps.color = barkMaps.color;
+    // Keep the catalog normal/roughness/ao; only the color channel can be
+    // overridden by a custom upload.
     tree.options.bark.maps.normal = barkMaps.normal;
     tree.options.bark.maps.roughness = barkMaps.roughness;
   }
-  tree.options.leaves.map = getLeafMap(tree.options.leaves.type);
+  // Custom uploaded bark color wins over the catalog texture.
+  tree.options.bark.maps.color = tree.options.bark.customColor
+    ? textureFromDataURL(tree.options.bark.customColor, { srgb: true })
+    : (barkMaps ? barkMaps.color : null);
+
+  // Custom uploaded leaf texture wins over the catalog texture.
+  tree.options.leaves.map = tree.options.leaves.customMap
+    ? textureFromDataURL(tree.options.leaves.customMap, { srgb: true, premultiplyAlpha: true })
+    : getLeafMap(tree.options.leaves.type);
 }
 
 /**
@@ -106,12 +148,14 @@ export function applyTreeTextures(tree) {
  * @param {boolean} generate - set false to skip the generate step when the
  * caller will generate the tree itself (e.g. via generateLODs)
  */
-export function loadPresetWithTextures(tree, name, generate = true) {
+export async function loadPresetWithTextures(tree, name, generate = true) {
   const json = structuredClone(TreePreset[name]);
   if (!json) return;
   tree.options.copy(json);
   applyTreeTextures(tree);
   if (generate) {
-    tree.generate();
+    // generateAsync yields to the browser between chunks so loading a preset
+    // (especially a heavy one) no longer freezes the UI.
+    await tree.generateAsync();
   }
 }

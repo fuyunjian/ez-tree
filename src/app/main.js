@@ -37,15 +37,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const clock = new THREE.Clock();
   function animate() {
-    // Update time for wind sway shaders
-    const t = clock.getElapsedTime();
-    tree.update(t);
-    scene.getObjectByName('Forest').children.forEach((o) => o.update(t));
-    environment.update(t);
-
-    controls.update();
-    composer.render();
+    // Schedule the next frame FIRST so a render error can never permanently
+    // freeze the UI (previously requestAnimationFrame sat after composer.render,
+    // so any throw here stopped the loop for good).
     requestAnimationFrame(animate);
+    try {
+      // Update time for wind sway shaders
+      const dt = clock.getDelta();
+      const t = clock.elapsedTime;
+      // Drive the growth animation playback clock (no-op unless playing).
+      ui.tickGrowth?.(dt);
+      tree.update(t);
+      scene.getObjectByName('Forest').children.forEach((o) => o.update(t));
+      environment.update(t);
+
+      controls.update();
+      composer.render();
+    } catch (err) {
+      // Keep the loop alive; surface the error for debugging instead of freezing.
+      console.error('Render loop error (frame skipped):', err);
+    }
   }
 
   function resize() {
@@ -238,6 +249,45 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const hit = pickBranch(e);
     if (hit) {
+      // Decal mode: spray a decal at the clicked surface point (takes
+      // precedence over paste mode / branch selection).
+      if (ui.isDecalMode && ui.isDecalMode()) {
+        // Re-raycast to obtain the hit face normal (pickBranch drops it).
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const decalHits = raycaster.intersectObject(tree.branchesMesh, false);
+        const dh = decalHits[0];
+        if (dh && dh.face) {
+          const worldNormal = dh.face.normal.clone()
+            .transformDirection(tree.branchesMesh.matrixWorld)
+            .normalize();
+          const added = tree.addDecalAt(dh.point, worldNormal, {
+            dataURL: ui.getDecalDataURL(),
+            size: ui.getDecalSize(),
+          });
+          if (added) ui.toast('已喷绘贴花');
+        }
+        return;
+      }
+      // Paste mode: the next clicked branch becomes the new parent of the
+      // copied subtree (re-parented, scaled by parent radius).
+      if (ui.isPasteArmed() && ui.getClipboard()) {
+        const template = ui.getClipboard();
+        const created = tree.pasteBranch(hit.index, template);
+        ui.disarmPaste();
+        if (created && created.length) {
+          ui.toast('已粘贴枝干（粘到更细的枝上会自动缩小）');
+          ui.regenerate().then(() => {
+            const idx = tree.skeleton.branches.findIndex((b) => b.path === created[0]);
+            if (idx >= 0) ui.selectBranch(idx);
+          });
+        } else {
+          ui.toast('粘贴失败');
+        }
+        return;
+      }
       ui.selectBranch(hit.index);
       return;
     }

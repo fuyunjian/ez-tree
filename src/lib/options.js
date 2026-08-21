@@ -14,6 +14,32 @@ export default class TreeOptions {
     //                 what makes per-branch overrides truly local.
     this.rngMode = 'shared';
 
+    // Global proportional scale of the whole tree (1 = unchanged). Applied as
+    // a uniform group scale after generation, so the trunk AND every branch
+    // level scale by the same factor — a 2x tree is exactly a 2x-bigger tree,
+    // never "trunk grew but twigs stayed small". Persists through export/import
+    // and regenerates consistently.
+    this.scale = 1;
+
+    // Growth animation (sapling → full tree). When enabled, branch generation
+    // is gated by `progress` (0..1): the trunk grows first, then level-1
+    // branches, then twigs, and the leaf canopy ramps up with it. Ephemeral —
+    // the host app drives it from two imported JSON files (small/big tree).
+    // Defaults to off, so exported trees and normal regeneration are
+    // completely unaffected.
+    this.growth = {
+      enabled: false,
+      progress: 1,
+    };
+
+    // Decals painted onto the trunk/branches (tree spots / graffiti), in the
+    // style of Unreal Engine decals. Each entry:
+    //   { dataURL, position:[x,y,z], normal:[x,y,z], size, depth, rotation }
+    // stored in the tree's LOCAL space so they survive regeneration and reapply
+    // (re-projected onto the current mesh) on every generate. The texture is a
+    // data URL so the whole tree serializes into a single JSON file.
+    this.decals = [];
+
     // Bark parameters
     this.bark = {
       // Informational identifier carried through presets. The library does not
@@ -39,6 +65,11 @@ export default class TreeOptions {
 
       // Apply texture to bark
       textured: true,
+
+      // User-uploaded custom bark color/albedo texture, stored as a data URL
+      // string (THREE.Texture can't be JSON-serialized). When set, it wins
+      // over the catalog `type` texture. null = use the catalog texture.
+      customColor: null,
 
       // Scale for the texture
       textureScale: { x: 1, y: 1 },
@@ -165,6 +196,11 @@ export default class TreeOptions {
       // Color map supplied by the caller. THREE.Texture or null.
       // When null, leaves render as a flat tinted quad.
       map: null,
+
+      // User-uploaded custom leaf color/albedo texture, stored as a data URL
+      // string. When set, it wins over the catalog `type` texture. null = use
+      // the catalog texture.
+      customMap: null,
 
       // Whether to use single or double/perpendicular billboards
       billboard: Billboard.Double,
@@ -332,11 +368,36 @@ export default class TreeOptions {
    */
   copy(source, target = this) {
     for (let key in source) {
-      if (source.hasOwnProperty(key) && target.hasOwnProperty(key)) {
+      if (source.hasOwnProperty(key)) {
         const value = source[key];
-        // Assign THREE.Texture (and any non-plain object) by reference rather
-        // than recursing — recursion would walk a Texture's internals.
-        if (value !== null && typeof value === 'object' && value.constructor === Object) {
+        // Some containers are authoritative: a saved file's empty overrides
+        // or userBranches list must fully replace whatever is currently in
+        // memory, not merge with stale keys from a previously loaded file.
+        if (key === 'overrides' || key === 'userBranches') {
+          if (Array.isArray(value)) {
+            target[key] = value.slice();
+            continue;
+          }
+          if (value && value.constructor === Object) {
+            target[key] = {};
+            this.copy(value, target[key]);
+            continue;
+          }
+        }
+        // Recurse only when both source and target values are plain objects.
+        // This preserves default sub-objects that the saved file omits (e.g.
+        // bark.maps, leaves.map, trunk, global, trellis) while still allowing
+        // dynamic dictionaries such as branch.overrides to gain new keys.
+        // THREE.Texture and arrays are not plain objects, so they are assigned
+        // directly rather than walked.
+        if (
+          value !== null &&
+          typeof value === 'object' &&
+          value.constructor === Object &&
+          target[key] != null &&
+          typeof target[key] === 'object' &&
+          target[key].constructor === Object
+        ) {
           this.copy(value, target[key]);
         } else {
           target[key] = value;

@@ -3,6 +3,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { zipSync } from 'three/addons/libs/fflate.module.js';
 import { Billboard, TreePreset, Tree, TreeType } from '@dgreenheck/ez-tree';
 import { BarkType, LeafType, applyTreeTextures, loadPresetWithTextures } from './textures';
+import { GrowthController } from './growth';
 import { Environment } from './environment';
 import { OrbitControls } from 'three/examples/jsm/Addons.js';
 import { version } from '../../package.json';
@@ -84,6 +85,48 @@ const icons = {
   spinner: `<svg class="icon icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
     <circle cx="12" cy="12" r="9" opacity="0.25" />
     <path stroke-linecap="round" d="M21 12a9 9 0 0 0-9-9" />
+  </svg>`,
+
+  upload: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
+  </svg>`,
+
+  copy: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H12M15.75 17.25h3.375c.621 0 1.125-.504 1.125-1.125V5.625c0-.621-.504-1.125-1.125-1.125H15.75m-9-3.75h6.375c.621 0 1.125.504 1.125 1.125v6.75c0 .621-.504 1.125-1.125 1.125H6.75a1.125 1.125 0 0 1-1.125-1.125V5.625c0-.621.504-1.125 1.125-1.125Z" />
+  </svg>`,
+
+  resize: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+  </svg>`,
+
+  brush: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="m9.53 16.12-6.12 6.12a1 1 0 0 1-1.65-1.06c.4-1.06 1.24-2.42 2.66-3.84 1.43-1.42 2.79-2.26 3.85-2.66l1.26 1.44Z" />
+    <path stroke-linecap="round" stroke-linejoin="round" d="M18.37 2.65a2.4 2.4 0 0 1 3.4 0l1.4 1.4a2.4 2.4 0 0 1 0 3.4l-9.83 9.83-4.8-4.8 9.83-9.83Z" />
+  </svg>`,
+
+  // Growth animation icons
+  film: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="m3.75 8.25 16.5-3.75M3.75 15.75l16.5 3.75m-16.5-11.25v7.5m16.5-11.25v7.5M5.25 8.25a1.5 1.5 0 0 0 1.5-1.5V5.25a1.5 1.5 0 0 0-3 0v1.5a1.5 1.5 0 0 0 1.5 1.5Zm0 12a1.5 1.5 0 0 0 1.5-1.5v-1.5a1.5 1.5 0 0 0-3 0v1.5a1.5 1.5 0 0 0 1.5 1.5Zm13.5-6a1.5 1.5 0 0 0 1.5-1.5v-1.5a1.5 1.5 0 0 0-3 0v1.5a1.5 1.5 0 0 0 1.5 1.5Zm0-6a1.5 1.5 0 0 0 1.5-1.5V5.25a1.5 1.5 0 0 0-3 0v1.5a1.5 1.5 0 0 0 1.5 1.5Z" />
+  </svg>`,
+
+  play: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+  </svg>`,
+
+  pause: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+  </svg>`,
+
+  rewind: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+  </svg>`,
+
+  close: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+  </svg>`,
+
+  sprout: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 21v-8m0 0a6 6 0 0 0-6-6H3a9 9 0 0 0 9 8m0-2a6 6 0 0 1 6-6h3a9 9 0 0 1-9 8m0-8V3" />
   </svg>`,
 
   // Arrow icon for sections
@@ -342,6 +385,157 @@ function createButton(label, iconKey, onClick) {
 }
 
 /**
+ * Creates an "upload image" control: a button that opens a file picker, reads
+ * the selected image as a data URL, and calls onDataURL(dataURL). An optional
+ * onClear callback wires a small "清除" button to reset the value.
+ */
+function createImageUpload(label, iconKey, { onDataURL, onClear } = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'control-row upload-row';
+
+  const button = document.createElement('button');
+  button.className = 'panel-button';
+  button.innerHTML = `${icons[iconKey] || ''}<span>${label}</span>`;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.style.display = 'none';
+  button.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { if (typeof onDataURL === 'function') onDataURL(reader.result); };
+    reader.readAsDataURL(file);
+  });
+
+  wrap.appendChild(button);
+  wrap.appendChild(input);
+
+  if (typeof onClear === 'function') {
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'panel-button subtle';
+    clearBtn.innerHTML = '<span>清除</span>';
+    clearBtn.addEventListener('click', () => onClear());
+    wrap.appendChild(clearBtn);
+  }
+
+  return { element: wrap };
+}
+
+/**
+ * Creates a button that opens a file picker and parses the chosen file as
+ * JSON text. Used by the growth tab to load exported small/big tree files.
+ * @param {string} label
+ * @param {string} iconKey
+ * @param {(json: object) => void} onJSON
+ */
+function createFileUpload(label, iconKey, onJSON) {
+  const wrap = document.createElement('div');
+  wrap.className = 'control-row upload-row';
+
+  const button = document.createElement('button');
+  button.className = 'panel-button';
+  button.innerHTML = `${icons[iconKey] || ''}<span>${label}</span>`;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.style.display = 'none';
+  button.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        onJSON(JSON.parse(reader.result));
+      } catch (err) {
+        console.error('Error parsing growth JSON:', err);
+        toast(`JSON 解析失败：${err.message}`, 3000);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  wrap.appendChild(button);
+  wrap.appendChild(input);
+  return { element: wrap };
+}
+
+/**
+ * Lightweight transient toast for user feedback (copy/paste/decal hints).
+ */
+let toastEl = null;
+let toastTimer = null;
+function toast(message, ms = 2200) {
+  if (!toastEl) {
+    toastEl = document.createElement('div');
+    toastEl.className = 'toast';
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = message;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
+}
+
+/**
+ * Generates a default procedural "tree spot" decal texture as a data URL —
+ * an irregular mossy blotch with speckles, so the decal tool works even
+ * before the user uploads their own image.
+ * @returns {string} PNG data URL (256×256, transparent background)
+ */
+function makeDefaultDecalDataURL() {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // Several overlapping soft blobs build up an irregular outline.
+  const blobs = [
+    { x: 0.50, y: 0.52, r: 0.36, a: 0.55 },
+    { x: 0.36, y: 0.42, r: 0.22, a: 0.45 },
+    { x: 0.64, y: 0.44, r: 0.20, a: 0.45 },
+    { x: 0.44, y: 0.66, r: 0.19, a: 0.40 },
+    { x: 0.60, y: 0.63, r: 0.16, a: 0.38 },
+  ];
+  for (const b of blobs) {
+    const grad = ctx.createRadialGradient(
+      b.x * size, b.y * size, 0,
+      b.x * size, b.y * size, b.r * size,
+    );
+    grad.addColorStop(0, `rgba(58, 68, 38, ${b.a})`);
+    grad.addColorStop(0.7, `rgba(45, 56, 30, ${b.a * 0.75})`);
+    grad.addColorStop(1, 'rgba(40, 50, 28, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(b.x * size, b.y * size, b.r * size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Speckle noise for moss-like texture.
+  for (let i = 0; i < 320; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const rad = Math.pow(Math.random(), 0.6) * 0.32 * size;
+    const x = size / 2 + Math.cos(ang) * rad;
+    const y = size / 2 + Math.sin(ang) * rad * 0.85;
+    const a = 0.08 + Math.random() * 0.2;
+    ctx.fillStyle = Math.random() > 0.5
+      ? `rgba(96, 112, 62, ${a})`
+      : `rgba(30, 38, 22, ${a})`;
+    const r = 1 + Math.random() * 2.5;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+/**
  * Creates a read-only display
  */
 function createDisplay(label, value, formatter = (v) => v) {
@@ -451,6 +645,11 @@ let selectedIndex = null;
 // Selected Branch section is built. Returns nothing.
 let selectBranch = () => {};
 
+// Copy/paste clipboard (a template from tree.copyBranch) and paste-mode flag.
+// main.js reads these to perform the paste on the next branch click.
+let clipboard = null;
+let pasteArmed = false;
+
 /**
  * Setups the UI
  * @param {Tree} tree
@@ -501,6 +700,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
       ${icons.archive}
       <span class="tab-label">导出</span>
     </button>
+    <button class="tab-button" data-tab="growth">
+      ${icons.film}
+      <span class="tab-label">生长</span>
+    </button>
   `;
   scrollArea.appendChild(tabNav);
 
@@ -525,6 +728,12 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   exportTab.className = 'tab-content';
   exportTab.id = 'tab-export';
   scrollArea.appendChild(exportTab);
+
+  // Growth tab
+  const growthTab = document.createElement('div');
+  growthTab.className = 'tab-content';
+  growthTab.id = 'tab-growth';
+  scrollArea.appendChild(growthTab);
 
   // ============================================================================
   // Stats Overlay (viewport HUD) with LOD preview switching
@@ -581,10 +790,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     return btn;
   });
 
-  function applyLODPreview() {
+  async function applyLODPreview() {
     const detail = Tree.defaultLODLevels[previewLevel]?.detail ?? {};
     const t0 = performance.now();
-    const { branches, leaves } = tree.createGeometry(detail);
+    const { branches, leaves } = await tree.createGeometryAsync(detail);
     lastBuildMs = performance.now() - t0;
     tree.branchesMesh.geometry.dispose();
     tree.branchesMesh.geometry = branches;
@@ -592,10 +801,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     tree.leavesMesh.geometry = leaves;
   }
 
-  function setPreviewLevel(level) {
+  async function setPreviewLevel(level) {
     previewLevel = level;
     lodButtons.forEach((b, i) => b.classList.toggle('active', i === level));
-    applyLODPreview();
+    await applyLODPreview();
     updateInfoDisplays();
   }
 
@@ -613,28 +822,57 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Parameters Tab Content
   // ============================================================================
 
-  const onChange = () => {
-    applyTreeTextures(tree);
-    const t0 = performance.now();
-    tree.generate();
-    lastBuildMs = performance.now() - t0;
-    if (previewLevel > 0) {
-      applyLODPreview();
-    }
-    tree.traverse((o) => {
-      if (o.material) {
-        o.material.needsUpdate = true;
-      }
-    });
-    // Keep the picked-branch highlight in sync after regeneration. If the
-    // branch count changed (e.g. levels/children edited), an out-of-range
-    // index auto-clears the highlight.
-    if (selectedIndex != null) {
-      tree.setSelectedBranch(selectedIndex);
-    }
+  // Coalesces rapid slider/parameter changes into at most one in-flight
+  // generation. If a change arrives while one is running, the newest request
+  // re-runs once after the current one settles — this prevents overlapping
+  // generates (which would corrupt the live geometry) when the user drags a
+  // slider quickly. generateAsync yields between chunks, so the UI stays
+  // responsive throughout.
+  let genInFlight = null;
+  let genPending = false;
 
-    // Update info displays
-    updateInfoDisplays();
+  const onChange = async () => {
+    if (genInFlight) {
+      genPending = true;
+      return genInFlight;
+    }
+    const run = async () => {
+      try {
+        do {
+          genPending = false;
+          applyTreeTextures(tree);
+          const t0 = performance.now();
+          await tree.generateAsync();
+          lastBuildMs = performance.now() - t0;
+          if (previewLevel > 0) {
+            await applyLODPreview();
+          }
+          tree.traverse((o) => {
+            if (o.material) {
+              o.material.needsUpdate = true;
+            }
+          });
+          // Keep the picked-branch highlight in sync after regeneration. If the
+          // branch count changed (e.g. levels/children edited), an out-of-range
+          // index auto-clears the highlight.
+          if (selectedIndex != null) {
+            tree.setSelectedBranch(selectedIndex);
+          }
+
+          // Update info displays
+          updateInfoDisplays();
+        } while (genPending);
+      } catch (err) {
+        console.error('Tree generation failed:', err);
+      }
+    };
+    genInFlight = run();
+    try {
+      await genInFlight;
+    } finally {
+      genInFlight = null;
+    }
+    return genInFlight;
   };
 
   // ----- Presets Section -----
@@ -661,10 +899,10 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   const presetSelect = createSelect('预设',
     Object.fromEntries(Object.keys(TreePreset).map(p => [presetDisplayNames[p] || p, p])),
     initialPreset,
-    (val) => {
-      loadPresetWithTextures(tree, val);
+    async (val) => {
+      await loadPresetWithTextures(tree, val);
       if (previewLevel > 0) {
-        applyLODPreview();
+        await applyLODPreview();
       }
       selectBranch(null);
       refreshAllControls();
@@ -688,6 +926,16 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   presetsSection.add(randomSeedBtn);
 
   parametersTab.appendChild(presetsSection.element);
+
+  // ----- Global Scale Section -----
+  const scaleSection = createSection('整体缩放 (Scale)', 'resize', true);
+  const scaleSlider = createSlider('缩放倍数', tree.options.scale ?? 1, 0.2, 5, 0.05, (val) => {
+    tree.options.scale = val;
+    onChange();
+  });
+  scaleSection.add(scaleSlider);
+  controls.push({ control: scaleSlider, update: () => scaleSlider.setValue(tree.options.scale ?? 1) });
+  parametersTab.appendChild(scaleSection.element);
 
   // ----- Bark Section -----
   const barkSection = createSection('树皮 (Bark)', 'cube', false);
@@ -733,6 +981,21 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   });
   barkSection.add(texScaleYSlider);
   controls.push({ control: texScaleYSlider, update: () => texScaleYSlider.setValue(tree.options.bark.textureScale.y) });
+
+  // Custom uploaded bark color texture (data URL). Wins over the catalog type.
+  const barkUpload = createImageUpload('上传自定义树皮', 'upload', {
+    onDataURL: (dataURL) => {
+      tree.options.bark.customColor = dataURL;
+      applyTreeTextures(tree);
+      onChange();
+    },
+    onClear: () => {
+      tree.options.bark.customColor = null;
+      applyTreeTextures(tree);
+      onChange();
+    },
+  });
+  barkSection.add(barkUpload);
 
   parametersTab.appendChild(barkSection.element);
 
@@ -1142,7 +1405,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   // One-click "ancient cypress" (Zhang-Fei-bai) pose: bulged base, slight
   // bow + twist, gentle overall lean/spiral and denser, thicker trunk.
-  const guobaiBtn = createButton('古柏预设 (Ancient Cypress)', 'sparkles', () => {
+  const guobaiBtn = createButton('古柏预设 (Ancient Cypress)', 'sparkles', async () => {
     trunkOpt.bottomSwell = 1.8;
     trunkOpt.swellHeight = 0.3;
     trunkOpt.bow = 6;
@@ -1195,7 +1458,7 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     slabOpt.segments = 12;
     tree.options.leaves.count = 3;
     tree.options.leaves.level = 2;
-    onChange();
+    await onChange();
     refreshAllControls();
   });
   globalSection.add(guobaiBtn);
@@ -1239,6 +1502,23 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
     const pathDisplay = createDisplay('路径', info.path);
     selectedContent.appendChild(pathDisplay.element);
+
+    // ----- Copy / Paste -----
+    const copyBtn = createButton('复制此枝干', 'copy', () => {
+      const tmpl = tree.copyBranch(index);
+      if (!tmpl) { toast('无法复制该枝干'); return; }
+      clipboard = tmpl;
+      pasteArmed = false;
+      toast('已复制该枝干及其子枝（含相对位置/大小）');
+    });
+    selectedContent.appendChild(copyBtn.element);
+
+    const pasteBtn = createButton('粘贴到这里', 'upload', () => {
+      if (!clipboard) { toast('请先复制一个枝干'); return; }
+      pasteArmed = true;
+      toast('已进入粘贴模式：点击场景中的任意枝干，作为新父枝');
+    });
+    selectedContent.appendChild(pasteBtn.element);
 
     // ----- User-placed branch (right-click → add) -----
     // Offers sliding along / rotating around the parent, plus removal.
@@ -1474,6 +1754,21 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   leavesSection.add(roundedNormalsToggle);
   controls.push({ control: roundedNormalsToggle, update: () => roundedNormalsToggle.setValue(tree.options.leaves.roundedNormals) });
 
+  // Custom uploaded leaf color texture (data URL). Wins over the catalog type.
+  const leafUpload = createImageUpload('上传自定义树叶', 'upload', {
+    onDataURL: (dataURL) => {
+      tree.options.leaves.customMap = dataURL;
+      applyTreeTextures(tree);
+      onChange();
+    },
+    onClear: () => {
+      tree.options.leaves.customMap = null;
+      applyTreeTextures(tree);
+      onChange();
+    },
+  });
+  leavesSection.add(leafUpload);
+
   // ----- Cloud Slab (云片) subsection (stage C) -----
   const slabSubsection = createSubSection('云片叶簇 (Cloud Slab)');
   const slabOpt = tree.options.leaves.slab;
@@ -1626,6 +1921,52 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   parametersTab.appendChild(trellisSection.element);
 
+  // ----- Decal Section (贴花 / 树斑) -----
+  // State shared with main.js via the returned API.
+  const decalState = {
+    mode: false,
+    dataURL: makeDefaultDecalDataURL(),
+    size: 0.8,
+  };
+
+  const decalSection = createSection('贴花 (Decals)', 'brush', false);
+
+  const decalModeToggle = createToggle('贴花模式（点击树干喷绘）', decalState.mode, (val) => {
+    decalState.mode = val;
+    if (val) {
+      toast('贴花模式已开启：点击树干/树枝表面即可喷绘树斑');
+      pasteArmed = false; // decal mode takes precedence over paste mode
+    }
+  });
+  decalSection.add(decalModeToggle);
+  controls.push({ control: decalModeToggle, update: () => decalModeToggle.setValue(decalState.mode) });
+
+  const decalSizeSlider = createSlider('贴花尺寸', decalState.size, 0.2, 3, 0.05, (val) => {
+    decalState.size = val;
+  });
+  decalSection.add(decalSizeSlider);
+  controls.push({ control: decalSizeSlider, update: () => decalSizeSlider.setValue(decalState.size) });
+
+  const decalUpload = createImageUpload('上传贴花图片', 'upload', {
+    onDataURL: (dataURL) => {
+      decalState.dataURL = dataURL;
+      toast('贴花图片已更新');
+    },
+    onClear: () => {
+      decalState.dataURL = makeDefaultDecalDataURL();
+      toast('已恢复默认树斑贴花');
+    },
+  });
+  decalSection.add(decalUpload);
+
+  const clearDecalsBtn = createButton('清除所有贴花', 'archive', async () => {
+    tree.clearDecals();
+    toast('已清除所有贴花');
+  });
+  decalSection.add(clearDecalsBtn);
+
+  parametersTab.appendChild(decalSection.element);
+
   // ----- Camera Section -----
   const cameraSection = createSection('相机 (Camera)', 'videoCamera', false);
 
@@ -1725,14 +2066,31 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
    */
   function stripBrokenTextures(root) {
     const restores = [];
+    const textureKeys = [
+      'map', 'aoMap', 'normalMap', 'roughnessMap', 'metalnessMap',
+      'alphaMap', 'bumpMap', 'displacementMap', 'emissiveMap', 'lightMap',
+      'envMap', 'gradientMap',
+    ];
     root.traverse((o) => {
       const materials = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
       for (const material of materials) {
-        for (const key of ['map', 'aoMap', 'normalMap', 'roughnessMap', 'metalnessMap']) {
+        for (const key of textureKeys) {
           const texture = material[key];
-          if (texture?.isTexture && !texture.image) {
+          if (!texture) continue;
+          if (!texture.isTexture || !texture.image) {
             restores.push(() => { material[key] = texture; });
             material[key] = null;
+            continue;
+          }
+          // GLTFExporter reads map.userData.mimeType; temporarily fix any
+          // broken/missing userData so export does not throw.
+          if (!texture.userData) {
+            restores.push(() => { texture.userData = undefined; });
+            texture.userData = { mimeType: 'image/png' };
+          } else if (!texture.userData.mimeType) {
+            const oldMime = texture.userData.mimeType;
+            restores.push(() => { texture.userData.mimeType = oldMime; });
+            texture.userData.mimeType = 'image/png';
           }
         }
       }
@@ -1856,6 +2214,249 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
 
   exportTab.appendChild(exportModelsSection.element);
 
+  // ============================================================================
+  // Growth Tab Content (树苗 → 大树)
+  // ============================================================================
+
+  const growth = new GrowthController();
+
+  let growthActive = false;
+  let growthBackup = null;       // JSON round-trip of tree.options before growth mode
+  let growthLastRegen = 0;       // playback rebuild throttle (~10 fps)
+  let previewLevelBeforeGrowth = 0;
+
+  const growthSection = createSection('生长动画 (Growth)', 'film', true);
+
+  const growthHint = document.createElement('p');
+  growthHint.className = 'growth-hint';
+  growthHint.textContent =
+    '上传两棵树在「导出」页保存的 tree.json 参数文件，即可沿时间轴播放从小树苗到大树的生长动画（先主干 → 再枝干 → 后小枝，树叶全程逐渐增多）。';
+  growthSection.element.appendChild(growthHint);
+
+  const smallStatus = createDisplay('小树', '未加载');
+  const bigStatus = createDisplay('大树', '未加载');
+  growthSection.add(smallStatus);
+  growthSection.add(bigStatus);
+
+  const smallUpload = createFileUpload('上传小树 JSON', 'sprout', (json) => {
+    growth.setSmall(json);
+    smallStatus.setValue('✓ 已加载');
+    toast('小树参数已加载');
+    enterGrowthMode();
+  });
+  growthSection.add(smallUpload.element);
+
+  const bigUpload = createFileUpload('上传大树 JSON', 'upload', (json) => {
+    growth.setBig(json);
+    bigStatus.setValue('✓ 已加载');
+    toast('大树参数已加载');
+    enterGrowthMode();
+  });
+  growthSection.add(bigUpload.element);
+
+  const playBtn = createButton('播放', 'play', () => {
+    if (!growth.ready) {
+      toast('请先上传大树 JSON');
+      return;
+    }
+    if (growth.playing) {
+      growth.pause();
+    } else {
+      if (growth.progress >= 0.999) growth.progress = 0;
+      growth.play();
+    }
+    updateGrowthPlayUI();
+  });
+  growthSection.add(playBtn.element);
+
+  const timelineSlider = createSlider('时间轴', 0, 0, 100, 1, (val) => {
+    if (!growth.ready) return;
+    growth.seek(val / 100);
+    applyGrowthSnapshot(growth.snapshotAt(growth.progress));
+    updateGrowthPlayUI();
+  });
+  growthSection.add(timelineSlider.element);
+
+  const durationSelect = createSelect('时长', {
+    '5 秒': 5000,
+    '10 秒': 10000,
+    '20 秒': 20000,
+    '30 秒': 30000,
+  }, growth.duration, (val) => { growth.duration = val; });
+  growthSection.add(durationSelect.element);
+
+  const loopToggle = createToggle('循环播放', growth.loop, (val) => { growth.loop = val; });
+  growthSection.add(loopToggle.element);
+
+  const exportGrowthGlbBtn = createButton('导出生长动画 GLB', 'download', async ({ setStatus }) => {
+    // Bake the current tree's growth into an animated GLB: force a full
+    // (progress=1) skeleton, build the branch/leaf-group scene with per-node
+    // scale tracks, then restore whatever was on screen.
+    const backup = JSON.parse(JSON.stringify(tree.options));
+    const wasPlaying = growth.playing;
+    try {
+      if (wasPlaying) growth.pause();
+      setStatus('正在构建完整树…');
+      // Force the tree to the FULL big-tree params before generating the
+      // export geometry. Otherwise the exported mesh is whatever intermediate
+      // progress was last previewed, and the final GLB ends up too small.
+      await applyGrowthSnapshot(growth.snapshotAt(1));
+      await paint();
+      setStatus('正在测量尺寸…');
+      // The small-tree numeric parameters are taken directly from the loaded
+      // small JSON (or the inferred young set). Per-level length/radius ratios
+      // drive the export, so we no longer need to measure overall heights or
+      // scale the whole tree uniformly.
+      const smallSnap = growth.snapshotAt(0);
+
+      setStatus('正在生成生长动画…');
+      const durationSec = (growth.duration || 12000) / 1000;
+      // Use the single morphing skeleton so the export actually grows: each
+      // branch is born through its level window, stretches out, and the canopy
+      // fills in. smallOptions only supplies the per-level young ratios; the
+      // structure comes from the big tree.
+      const { scene, clip } = tree.createGrowthExportScene({
+        duration: durationSec,
+        dualTree: false,
+        fullAtStart: false,
+        uniformScale: false,
+        smallOptions: growth.small || smallSnap,
+        // Empirical baking: sample the runtime skeleton at each progress so
+        // the exported tracks match the scene by construction. Keep growth
+        // ENABLED so branches are absent at birth and appear through their
+        // windows; this is what gives the clip its "growing" feel.
+        sampleAt: (p) => growth.snapshotAt(p),
+      });
+      // Set the exported bind pose to the final big tree, so viewers that
+      // show the model paused still display the full-size tree. LoopOnce +
+      // clamp prevents the time from wrapping back to the sapling frame when
+      // update() reaches the clip duration.
+      const exportMixer = new THREE.AnimationMixer(scene);
+      const exportAction = exportMixer.clipAction(clip);
+      exportAction.loop = THREE.LoopOnce;
+      exportAction.clampWhenFinished = true;
+      exportAction.play();
+      exportMixer.update(durationSec);
+      scene.updateMatrixWorld(true);
+
+      const restoreTextures = stripBrokenTextures(scene);
+      try {
+        setStatus('正在导出 GLB…');
+        await paint();
+        const glb = await new Promise((resolve, reject) =>
+          exporter.parse(scene, resolve, reject, { binary: true, animations: [clip] }),
+        );
+        const blob = new Blob([glb], { type: 'application/octet-stream' });
+        const link = document.getElementById('downloadLink');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'tree_growth.glb';
+        link.click();
+      } finally {
+        restoreTextures();
+      }
+    } catch (err) {
+      console.error(err);
+      toast('GLB 导出失败，请查看控制台');
+    } finally {
+      tree.options.copy(backup);
+      await onChange();
+      updateGrowthPlayUI();
+    }
+  });
+  growthSection.add(exportGrowthGlbBtn.element);
+
+  const exitBtn = createButton('退出生长模式', 'close', () => exitGrowthMode());
+  growthSection.add(exitBtn.element);
+
+  growthTab.appendChild(growthSection.element);
+
+  /**
+   * Applies a growth snapshot to the tree and rebuilds through the normal
+   * (coalesced) regenerate path. Textures come from the big tree's config.
+   */
+  function applyGrowthSnapshot(snap) {
+    if (!snap) return Promise.resolve();
+    tree.options.copy(snap);
+    applyTreeTextures(tree);
+    return onChange();
+  }
+
+  /** Enters growth mode once both (or at least the big) files are loaded. */
+  function enterGrowthMode() {
+    if (!growth.ready) return;
+    if (!growthActive) {
+      growthActive = true;
+      // Back up the current tree so 退出生长模式 can restore it exactly.
+      growthBackup = JSON.parse(JSON.stringify(tree.options));
+      previewLevelBeforeGrowth = previewLevel;
+    }
+    applyGrowthSnapshot(growth.snapshotAt(growth.progress));
+    updateGrowthPlayUI();
+  }
+
+  /** Leaves growth mode and restores the pre-growth tree. */
+  function exitGrowthMode() {
+    growth.pause();
+    growth.clear();
+    smallStatus.setValue('未加载');
+    bigStatus.setValue('未加载');
+    timelineSlider.setValue(0);
+    if (growthBackup) {
+      tree.options.copy(growthBackup);
+      applyTreeTextures(tree);
+      onChange();
+    }
+    growthBackup = null;
+    growthActive = false;
+    if (previewLevel !== previewLevelBeforeGrowth) {
+      setPreviewLevel(previewLevelBeforeGrowth);
+    }
+    updateGrowthPlayUI();
+  }
+
+  /** Syncs the play/pause button label + timeline + LOD detail with state. */
+  function updateGrowthPlayUI() {
+    playBtn.element.innerHTML =
+      `${icons[growth.playing ? 'pause' : 'play']}<span>${growth.playing ? '暂停' : '播放'}</span>`;
+    timelineSlider.setValue(growth.progress * 100);
+    // Smoothness: use LOD1 while playing, restore full detail when stopped.
+    if (growthActive && growth.ready) {
+      if (growth.playing && previewLevel === 0) {
+        setPreviewLevel(1);
+      } else if (!growth.playing && previewLevel !== previewLevelBeforeGrowth) {
+        setPreviewLevel(previewLevelBeforeGrowth);
+      }
+    }
+  }
+
+  /**
+   * Drives the playback clock from the render loop. Rebuilds the tree at a
+   * throttled rate (~10 fps) so the animation stays smooth on heavy trees.
+   * @param {number} dt seconds since the last frame
+   */
+  function tickGrowth(dt) {
+    if (!growthActive || !growth.playing || !growth.ready) return;
+    if (!growth.tick((dt || 0) * 1000)) {
+      // Reached the end (playback auto-stopped) — settle at full detail.
+      if (growth.progress >= 1 && previewLevel !== previewLevelBeforeGrowth) {
+        setPreviewLevel(previewLevelBeforeGrowth);
+      }
+      updateGrowthPlayUI();
+      return;
+    }
+    const now = performance.now();
+    if (now - growthLastRegen < 100) return;
+    growthLastRegen = now;
+    applyGrowthSnapshot(growth.snapshotAt(growth.progress)).then(() => {
+      timelineSlider.setValue(growth.progress * 100);
+      if (!growth.playing && growth.progress >= 1) {
+        updateGrowthPlayUI();
+      }
+    });
+  }
+
+  exportTab.appendChild(exportModelsSection.element);
+
   // Panel footer with course link
   const footer = document.createElement('div');
   footer.className = 'panel-footer';
@@ -1882,18 +2483,26 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
     const file = event.target.files[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = function (e) {
+      reader.onload = async function (e) {
         try {
-          tree.options = JSON.parse(e.target.result);
-          tree.options.rngMode = tree.options.rngMode || 'perBranch';
-          tree.generate();
+          const json = JSON.parse(e.target.result);
+          json.rngMode = json.rngMode || 'perBranch';
+          // Merge into the existing TreeOptions instance via copy() instead of
+          // replacing tree.options. Saved preset files omit newer sub-objects
+          // (bark.maps, leaves.map, trunk, global, trellis); replacing the whole
+          // object drops them, so generateAsync() throws (e.g. reading
+          // 'deadwood') — which froze the UI and made parameter edits do
+          // nothing. copy() keeps the defaults and overlays the saved values.
+          tree.options.copy(json);
+          applyTreeTextures(tree);
+          await tree.generateAsync();
           if (previewLevel > 0) {
-            applyLODPreview();
+            await applyLODPreview();
           }
           selectBranch(null);
           refreshAllControls();
         } catch (error) {
-          console.error('Error parsing JSON:', error);
+          console.error('Error parsing / loading preset JSON:', error);
         }
       };
       reader.onerror = function (e) {
@@ -1917,8 +2526,19 @@ export function setupUI(tree, environment, renderer, scene, camera, orbitControl
   // Mobile expand/collapse functionality
   setupMobileToggle(panel, header);
 
-  // Expose the branch-picking API to the scene/raycaster.
-  return { selectBranch, regenerate: onChange };
+  // Expose the branch-picking API (and copy/paste + decal state) to the scene/raycaster.
+  return {
+    selectBranch,
+    regenerate: onChange,
+    getClipboard: () => clipboard,
+    isPasteArmed: () => pasteArmed,
+    disarmPaste: () => { pasteArmed = false; },
+    isDecalMode: () => decalState.mode,
+    getDecalDataURL: () => decalState.dataURL,
+    getDecalSize: () => decalState.size,
+    toast,
+    tickGrowth,
+  };
 }
 
 /**

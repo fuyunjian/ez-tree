@@ -5,6 +5,23 @@ import { Billboard, TreeType } from './enums';
 import TreeOptions from './options';
 import { loadPreset } from './presets/index';
 import { Trellis } from './trellis';
+import { DecalGeometry } from 'three/addons/geometries/DecalGeometry.js';
+
+/**
+ * Yields to the browser long enough for pending DOM updates to paint before
+ * blocking work resumes on the main thread. Used by the chunked async
+ * generation path so large trees don't freeze the UI while they build.
+ * @returns {Promise<void>}
+ */
+function yieldToBrowser() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
 
 export class Tree extends THREE.Group {
   /**
@@ -140,6 +157,21 @@ export class Tree extends THREE.Group {
   ];
 
   /**
+   * Birth windows for the growth animation, indexed by branch level. Each
+   * window is the progress range (0..1) over which that level goes from a
+   * bud to full size. Overlapping windows keep the growth continuous: the
+   * trunk (level 0) finishes first, then level 1, then the twigs — the
+   * classic "up the trunk, out the branches, into the twigs" reveal.
+   * @type {{start: number, end: number}[]}
+   */
+  static growthWindows = [
+    { start: 0.00, end: 0.34 }, // level 0 — trunk
+    { start: 0.24, end: 0.60 }, // level 1
+    { start: 0.48, end: 0.82 }, // level 2
+    { start: 0.66, end: 1.00 }, // level 3+ (terminal twigs, user branches)
+  ];
+
+  /**
    * Generate a new tree
    */
   generate() {
@@ -153,6 +185,175 @@ export class Tree extends THREE.Group {
     this.createBranchesGeometry();
     this.createLeavesGeometry();
     this.createTrellis();
+    this.#applyScale();
+    this.#applyDecals();
+  }
+
+  /**
+   * Async variant of {@link generate} that yields to the browser between
+   * chunks of skeleton growth and meshing. Large trees build incrementally
+   * across animation frames instead of blocking the main thread in one long
+   * synchronous burst — this is what keeps the UI responsive while a preset
+   * is loading. The resulting geometry is identical to generate().
+   * @returns {Promise<void>}
+   */
+  async generateAsync() {
+    this.#clearLOD();
+    await this.#generateSkeletonAsync();
+
+    const buffers = await this.#meshSkeletonAsync();
+    this.branches = buffers.branches;
+    this.leaves = buffers.leaves;
+
+    this.createBranchesGeometry();
+    this.createLeavesGeometry();
+    this.createTrellis();
+    this.#applyScale();
+    this.#applyDecals();
+  }
+
+  /**
+   * Applies the global proportional scale (options.scale) as a uniform group
+   * transform. Because it scales the whole group by one factor, the trunk and
+   * every branch level grow/shrink together — there is no scenario where the
+   * trunk scales but twigs don't. Cheap, and correct by construction.
+   */
+  #applyScale() {
+    const s = this.options.scale;
+    this.scale.setScalar(typeof s === 'number' && s > 0 ? s : 1);
+  }
+
+  /**
+   * Re-projects all decals (options.decals) onto the current branch mesh.
+   * Each decal descriptor stores its position/normal in the tree's LOCAL space
+   * (so it survives regeneration and re-scales with the tree); here we transform
+   * to world space for the projector, build a conforming DecalGeometry, and add
+   * it as a child of the branch mesh. Cheap (a handful of decals) and idempotent
+   * — safe to call on every generate.
+   */
+  #decalTexCache = new Map();
+  #applyDecals() {
+    // Drop previously projected decal meshes (keep the descriptor list intact).
+    if (this.decalGroup) {
+      this.branchesMesh.remove(this.decalGroup);
+      this.decalGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+      });
+      this.decalGroup = null;
+    }
+
+    const decals = this.options.decals;
+    if (!decals || !decals.length) return;
+
+    this.updateMatrixWorld(true);
+    const meshWorld = this.branchesMesh.matrixWorld;
+
+    const group = new THREE.Group();
+    group.name = 'Decals';
+
+    for (const d of decals) {
+      if (!d || !d.dataURL) continue;
+      const localPos = new THREE.Vector3().fromArray(d.position);
+      const worldPos = localPos.clone().applyMatrix4(meshWorld);
+      const localNormal = new THREE.Vector3().fromArray(d.normal).normalize();
+      const worldNormal = localNormal.clone().transformDirection(meshWorld).normalize();
+
+      const orientation = new THREE.Euler().setFromQuaternion(
+        new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 0, 1),
+          worldNormal,
+        ),
+      );
+      orientation.z += (d.rotation || 0);
+
+      const size = new THREE.Vector3(d.size, d.size, d.depth ?? d.size * 0.5);
+
+      let geo;
+      try {
+        geo = new DecalGeometry(this.branchesMesh, worldPos, orientation, size);
+      } catch (e) {
+        continue;
+      }
+      if (!geo.attributes.position || geo.attributes.position.count === 0) continue;
+
+      let tex = this.#decalTexCache.get(d.dataURL);
+      if (!tex) {
+        tex = new THREE.TextureLoader().load(d.dataURL);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.premultiplyAlpha = true;
+        this.#decalTexCache.set(d.dataURL, tex);
+      }
+
+      const mat = new THREE.MeshStandardMaterial({
+        name: 'decal',
+        map: tex,
+        transparent: true,
+        depthTest: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+        roughness: 1,
+        metalness: 0,
+      });
+
+      const dm = new THREE.Mesh(geo, mat);
+      dm.name = 'Decal';
+      group.add(dm);
+    }
+
+    if (group.children.length) {
+      this.branchesMesh.add(group);
+      this.decalGroup = group;
+    }
+  }
+
+  /**
+   * Adds a decal descriptor from a world-space surface hit and immediately
+   * re-projects all decals. The descriptor stores LOCAL-space position and
+   * normal (converted here), so it survives regeneration and scales with the
+   * tree. No regeneration is needed — decals are re-projected in place.
+   * @param {THREE.Vector3} worldPoint raycast hit point (world space)
+   * @param {THREE.Vector3} worldNormal raycast hit face normal (world space)
+   * @param {{dataURL: string, size?: number, depth?: number, rotation?: number}} opts
+   * @returns {object|null} the stored descriptor
+   */
+  addDecalAt(worldPoint, worldNormal, opts) {
+    if (!this.branchesMesh || !opts || !opts.dataURL) return null;
+    this.updateMatrixWorld(true);
+    const meshWorld = this.branchesMesh.matrixWorld;
+    const meshInv = meshWorld.clone().invert();
+
+    const localPos = worldPoint.clone().applyMatrix4(meshInv);
+    const localNormal = worldNormal.clone().transformDirection(meshInv).normalize();
+
+    const descriptor = {
+      dataURL: opts.dataURL,
+      position: [localPos.x, localPos.y, localPos.z],
+      normal: [localNormal.x, localNormal.y, localNormal.z],
+      size: opts.size ?? 0.8,
+      depth: opts.depth,
+      rotation: opts.rotation ?? Math.random() * Math.PI * 2,
+    };
+    (this.options.decals || (this.options.decals = [])).push(descriptor);
+    this.#applyDecals();
+    return descriptor;
+  }
+
+  /**
+   * Removes all decal descriptors and their projected meshes.
+   */
+  clearDecals() {
+    this.options.decals = [];
+    if (this.decalGroup) {
+      this.branchesMesh.remove(this.decalGroup);
+      this.decalGroup.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose();
+      });
+      this.decalGroup = null;
+    }
   }
 
   /**
@@ -215,6 +416,8 @@ export class Tree extends THREE.Group {
 
     this.add(this.lod);
     this.createTrellis();
+    this.#applyScale();
+    this.#applyDecals();
   }
 
   /**
@@ -234,6 +437,1077 @@ export class Tree extends THREE.Group {
       branches: this.#buildBufferGeometry(buffers.branches),
       leaves: this.#buildBufferGeometry(buffers.leaves),
     };
+  }
+
+  /**
+   * Async variant of {@link createGeometry} that yields to the browser while
+   * meshing, so an LOD preview re-build on a large tree doesn't freeze the UI.
+   * @param {LODDetail} detail
+   * @returns {Promise<{ branches: THREE.BufferGeometry, leaves: THREE.BufferGeometry }>}
+   */
+  async createGeometryAsync(detail = {}) {
+    if (!this.skeleton) {
+      this.#generateSkeleton();
+    }
+    const buffers = await this.#meshSkeletonAsync(detail);
+    return {
+      branches: this.#buildBufferGeometry(buffers.branches),
+      leaves: this.#buildBufferGeometry(buffers.leaves),
+    };
+  }
+
+  /**
+   * Builds a standalone THREE.Scene that reproduces the tree's full-detail
+   * geometry as a SKELETON hierarchy of branch meshes plus leaf-group meshes,
+   * together with an AnimationClip whose per-node scale tracks grow the tree
+   * from sapling to full size using the SAME birth windows and the SAME
+   * length/radius curves as the in-app growth animation (trunk → branches →
+   * twigs, leaves popping in as their parent branch matures). Feed `scene` +
+   * `clip` to GLTFExporter's `animations` option to bake the growth into a
+   * GLB.
+   *
+   * The tree must currently hold a FULL (progress=1) skeleton — the caller
+   * regenerates with growth.progress=1 first (or with growth disabled) and
+   * restores afterwards.
+   *
+   * Hierarchy & coordinate spaces (this is what keeps the GLB animation
+   * faithful to the in-app one):
+   *  - Every branch node is PARENTED to its skeleton parent (trunk → root
+   *    rig), with a local transform placed at the attachment point in the
+   *    parent's frame. A growing parent therefore carries its children along,
+   *    so twigs climb the trunk instead of flying in from the world origin.
+   *  - Branch geometry is baked in its own LOCAL frame (origin = attachment
+   *    point, +Z = first-segment direction), full detail, independent of any
+   *    active LOD preview.
+   *  - Each branch has a NON-UNIFORM scale track (radius, radius, length)
+   *    whose samples replicate #growthLevel exactly: hidden before birth,
+   *    a ~36% bud appears at 8% into the birth window, then smoothsteps to
+   *    full size by the window end. Level-0 branches (trunk) are born with
+   *    the clip, so t=0 already shows a sapling trunk.
+   *  - A small ring of "sapling leaves" on the young trunk carries the
+   *    "leaves exist the whole time" feel; regular leaves are grouped by
+   *    their nearest branch and pop in once that branch is ~85% elongated.
+   * @param {{duration?: number, scaleStart?: number, smallOptions?: object,
+   *          sampleAt?: (progress: number) => object}} [opts]
+   *   Animation length in seconds (default 12); scaleStart optionally animates
+   *   the whole tree from a sapling scale up to 1 (e.g. the small-tree JSON's
+   *   scale); smallOptions is the small-tree snapshot so each branch can grow
+   *   from its young size to its full size instead of only appearing via the
+   *   birth window; sampleAt (GrowthController#snapshotAt) enables EMPIRICAL
+   *   baking — the runtime skeleton is regenerated at a series of progress
+   *   values and every branch's measured attach point / length / radius is
+   *   baked into the tracks, so the exported animation matches the scene by
+   *   construction (sibling attach sliding, evergreen taper and all).
+   * @returns {{scene: THREE.Scene, clip: THREE.AnimationClip, duration: number}}
+   */
+  createGrowthExportScene(opts = {}) {
+    const duration = opts.duration ?? 12;
+    // fullAtStart: the animation begins from the complete small-tree state
+    // (all branches already visible, leaves present) instead of a bare
+    // seedling. This is the mode used when exporting from an uploaded
+    // small-tree JSON to an uploaded big-tree JSON.
+    const fullAtStart = opts.fullAtStart === true;
+
+    // Dual-tree mode: the small and big JSONs have genuinely different
+    // topologies (e.g. one is procedural with many children, the other is
+    // hand-edited with user branches and overrides). The only robust way to
+    // make the first frame look exactly like the small tree and the last
+    // frame look exactly like the big tree is to build BOTH trees and cross-
+    // fade their scales. The small tree stays visible for the first ~60% of
+    // the clip while the big tree grows from the small height to full height;
+    // then the small tree shrinks away as the big tree takes over.
+    if (opts.dualTree === true && opts.smallOptions) {
+      return this.#createDualTreeExportScene(opts);
+    }
+
+    const scene = new THREE.Scene();
+    scene.name = 'TreeGrowth';
+
+    const root = new THREE.Group();
+    root.name = 'Tree';
+    const treeScale = this.options.scale;
+    if (typeof treeScale === 'number' && treeScale > 0) {
+      root.scale.setScalar(treeScale);
+    }
+    scene.add(root);
+
+    // A dedicated rig under the static-scaled root: the optional whole-tree
+    // scaleStart → 1 animation lives here, so it never collides with the
+    // tree's own static options.scale on the root node.
+    const rig = new THREE.Group();
+    rig.name = 'GrowthRig';
+    root.add(rig);
+
+    const barkMaterial = this.branchesMesh?.material ?? this.#createBarkMaterial();
+    const leafMaterial = this.leavesMesh?.material ?? this.#createLeafMaterial();
+
+    const tracks = [];
+    const branches = this.skeleton.branches;
+
+    // Per-level size ratios between the young (small) tree and the full (big)
+    // tree. These fold the small->big parameter interpolation into the GLB
+    // animation so a branch is born at its young size and grows to full size.
+    const bigOpts = this.options;
+    const smallOpts = opts.smallOptions;
+    const maxLevel = Math.max(
+      0,
+      ...branches.map((b) => b.level),
+    );
+    const uniformScale = opts.uniformScale === true;
+    const levelRatios = [];
+    if (smallOpts && smallOpts.branch && bigOpts.branch) {
+      const smallL = smallOpts.branch.length || {};
+      const bigL = bigOpts.branch.length || {};
+      const smallR = smallOpts.branch.radius || {};
+      const bigR = bigOpts.branch.radius || {};
+      for (let lvl = 0; lvl <= maxLevel; lvl++) {
+        const bl = typeof bigL[lvl] === 'number' ? bigL[lvl] : 1;
+        const sl = typeof smallL[lvl] === 'number' ? smallL[lvl] : bl;
+        const br = typeof bigR[lvl] === 'number' ? bigR[lvl] : 1;
+        const sr = typeof smallR[lvl] === 'number' ? smallR[lvl] : br;
+        levelRatios[lvl] = {
+          lScale: uniformScale ? 1 : (bl > 0 ? sl / bl : 1),
+          rScale: uniformScale ? 1 : (br > 0 ? sr / br : 1),
+        };
+      }
+    }
+    while (levelRatios.length <= maxLevel) {
+      levelRatios.push({ lScale: 1, rScale: 1 });
+    }
+
+    // Leaf size ratio
+    let leafSizeRatio = 1;
+    if (smallOpts && smallOpts.leaves && bigOpts.leaves) {
+      const bs = typeof bigOpts.leaves.size === 'number' ? bigOpts.leaves.size : 1;
+      const ss = typeof smallOpts.leaves.size === 'number' ? smallOpts.leaves.size : bs;
+      leafSizeRatio = bs > 0 ? ss / bs : 1;
+    }
+
+    // Small→big parameter interpolation, mirroring GrowthController's
+    // snapshotAt: per-level params lerp with a smoothstep ease over the
+    // WHOLE timeline (the trunk keeps thickening/lengthening long after its
+    // birth window closes — the sapling's params only reach the big tree's
+    // at p = 1).
+    const easeP = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+    // Buttress roots have no birth window at runtime: they exist at full
+    // length from the very first frame (their thickness rides the trunk's
+    // base radius). Detect them by path so their export track matches.
+    const isRootBranch = (sb) => /\.root\d+$/.test(sb.path);
+
+    // ---- per-branch local frame: origin = attachment point, zAxis = first
+    // ---- segment direction, x/y span the cross-section (so a non-uniform
+    // ---- scale (r, r, l) maps onto radius / length like #growthLevel).
+    const frameOf = (sb) => {
+      const s = sb.sections;
+      const origin = s[0].origin;
+      const dir = new THREE.Vector3(0, 1, 0);
+      if (s.length > 1) dir.subVectors(s[1].origin, s[0].origin);
+      if (dir.lengthSq() < 1e-12) dir.set(0, 1, 0);
+      dir.normalize();
+      const zAxis = dir;
+      const xAxis = new THREE.Vector3(0, 1, 0).cross(zAxis);
+      if (xAxis.lengthSq() < 1e-10) xAxis.set(1, 0, 0);
+      xAxis.normalize();
+      const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+      const R = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+      return { origin, xAxis, yAxis, zAxis, R, Rt: R.clone().transpose() };
+    };
+
+    /** world → frame: p' = Rᵀ(p − origin); mutates v. */
+    const toLocal = (frame, v) => v.sub(frame.origin).applyMatrix4(frame.Rt);
+
+    /** Rewrites a buffers array's verts/normals from world to frame coords. */
+    const localizeBuffers = (buffers, frame) => {
+      const v = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      for (let i = 0; i < buffers.verts.length; i += 3) {
+        v.set(buffers.verts[i], buffers.verts[i + 1], buffers.verts[i + 2])
+          .sub(frame.origin).applyMatrix4(frame.Rt);
+        buffers.verts[i] = v.x;
+        buffers.verts[i + 1] = v.y;
+        buffers.verts[i + 2] = v.z;
+        n.set(buffers.normals[i], buffers.normals[i + 1], buffers.normals[i + 2])
+          .applyMatrix4(frame.Rt);
+        buffers.normals[i] = n.x;
+        buffers.normals[i + 1] = n.y;
+        buffers.normals[i + 2] = n.z;
+      }
+    };
+
+    // ---- skeleton parent map: "0.3" → "0", "0.2c" → "0.2", "0c" → "0",
+    // ---- "0@u1" → "0", "0.root0" → "0"; null = root rig.
+    const parentPathOf = (path) => {
+      if (path.includes('@')) return path.slice(0, path.lastIndexOf('@'));
+      const idx = path.lastIndexOf('.');
+      if (idx < 0) {
+        // No dot: only possible as a bare tip continuation ("0c" → "0").
+        return /[a-z]+$/i.test(path) ? path.replace(/[a-z]+$/i, '') : null;
+      }
+      const last = path.slice(idx + 1);
+      if (/[a-z]+$/i.test(last)) {
+        return path.slice(0, idx) + '.' + last.replace(/[a-z]+$/i, '');
+      }
+      return path.slice(0, idx);
+    };
+    const byPath = new Map();
+    branches.forEach((sb, i) => { if (!byPath.has(sb.path)) byPath.set(sb.path, i); });
+    const parentIndex = (i) => {
+      let p = parentPathOf(branches[i].path);
+      while (p != null && !byPath.has(p)) p = parentPathOf(p);
+      return p == null ? -1 : byPath.get(p);
+    };
+
+    const frames = branches.map(frameOf);
+    const worldMat = branches.map((_, i) => {
+      const f = frames[i];
+      return new THREE.Matrix4().makeBasis(f.xAxis, f.yAxis, f.zAxis).setPosition(f.origin);
+    });
+    const invWorldMat = worldMat.map((m) => m.clone().invert());
+
+    // ---- Empirical baking (optional) -------------------------------------
+    // When opts.sampleAt is provided (the app passes GrowthController's
+    // snapshotAt), regenerate the runtime skeleton at a series of progress
+    // values and bake the MEASURED attachment / length / radius of every
+    // branch into the tracks. The exported animation then matches the scene
+    // BY CONSTRUCTION, including behaviours no closed-form curve reproduces:
+    // sibling attach points sliding up the parent as the level fills in,
+    // the evergreen (1 - start) length taper, radii read off the parent's
+    // CURRENT sections, and the small→big parameter interpolation itself.
+    const sampleAt = typeof opts.sampleAt === 'function' ? opts.sampleAt : null;
+    /**
+     * Measured per-branch quantities at every sample:
+     *  - dir: the FIRST-SECTION direction (sec1 − sec0, normalized). The
+     *    baked rotation aligns the node's rest z-axis to this — at p = 1 the
+     *    runtime first direction equals the rest one, so the final pose is
+     *    EXACTLY the rest transform (no residual rotation, unlike a
+     *    chord-aligned rotation, which tilts curved branches away from
+     *    their rest pose even at p = 1).
+     *  - wz: the tip's signed projection onto dir. The baked z-scale is
+     *    wz / restZProj, which places the tip correctly along the branch
+     *    axis and is exactly 1 at p = 1 by construction.
+     *  - chord: |tip − attach|, a robust always-positive fallback length
+     *    factor for branches whose rest spine curls past perpendicular
+     *    (restZProj ≈ 0 makes the projection ratio unstable).
+     */
+    /** progress → Map(path → {attach, dir, wz, chord, baseRad}) of the runtime tree. */
+    let sampleSeries = null;
+    /** path → Map(progress → measured length factor) for parent lookups. */
+    let vlByPath = null;
+    let bigRef = null; // the p = 1 sample (same tree as the export geometry)
+    if (sampleAt) {
+      try {
+        const ps = [];
+        for (let k = 0; k <= 20; k++) ps.push(k / 20);
+        sampleSeries = new Map();
+        vlByPath = new Map();
+        for (const p of ps) {
+          const probe = new Tree(sampleAt(p));
+          probe.#generateSkeleton();
+          const m = new Map();
+          for (const sb of probe.skeleton.branches) {
+            if (!byPath.has(sb.path)) continue;
+            const attach = sb.sections[0].origin;
+            const tip = sb.sections[sb.sections.length - 1].origin;
+            const chord = attach.distanceTo(tip);
+            let dir = null;
+            let wz = 0;
+            if (sb.sections.length > 1) {
+              const d = new THREE.Vector3().subVectors(
+                sb.sections[1].origin,
+                sb.sections[0].origin,
+              );
+              const len = d.length();
+              if (len > 1e-9) {
+                dir = d.multiplyScalar(1 / len);
+                wz = new THREE.Vector3().subVectors(tip, attach).dot(dir);
+              }
+            }
+            m.set(sb.path, {
+              attach: attach.clone(),
+              dir,
+              wz,
+              chord,
+              baseRad: sb.sections[0].radius,
+            });
+          }
+          sampleSeries.set(p, m);
+          if (p >= 1) bigRef = m;
+        }
+        for (const [pk, m] of sampleSeries) {
+          for (const [path, e] of m) {
+            const ref = bigRef.get(path);
+            if (!ref || ref.chord <= 1e-9) continue;
+            let v = vlByPath.get(path);
+            if (!v) { v = new Map(); vlByPath.set(path, v); }
+            v.set(pk, e.chord / ref.chord);
+          }
+        }
+      } catch (err) {
+        // Fall back to the analytic tracks if sampling fails for any reason.
+        console.warn('createGrowthExportScene: sampling failed, using analytic tracks', err);
+        sampleSeries = null;
+        vlByPath = null;
+      }
+    }
+
+    /** Linear interpolation over a Map(progress → number); 1 fallback. */
+    const lerpMap = (v, p) => {
+      if (!v || v.size === 0) return 1;
+      const keys = [...v.keys()].sort((a, b) => a - b);
+      if (p <= keys[0]) return v.get(keys[0]);
+      if (p >= keys[keys.length - 1]) return v.get(keys[keys.length - 1]);
+      for (let i = 1; i < keys.length; i++) {
+        if (p <= keys[i]) {
+          const a = keys[i - 1];
+          const b = keys[i];
+          const f = (p - a) / Math.max(1e-9, b - a);
+          return v.get(a) + (v.get(b) - v.get(a)) * f;
+        }
+      }
+      return 1;
+    };
+
+    /**
+     * Mirrors #growthLevel for a skeleton branch: it becomes visible when its
+     * level's birth window opens (≈8% into the window — the length ≥ 0.36
+     * bud threshold), staggered per sibling / user branch, and is fully
+     * mature when the window ends (stagger no longer matters at the end).
+     * Also exposes the window factor as a curve g(p) → {l, r} so the export
+     * track can multiply it with the small→big param interpolation.
+     * @param {{path: string, level: number, user?: object}} sb
+     */
+    const growthInfoOf = (sb) => {
+      if (isRootBranch(sb)) {
+        // No window: constant factor 1 (full length from frame one, like
+        // the runtime — #generateRoots never applies #growthLevel).
+        return { g: () => ({ l: 1, r: 1 }), born: 0, mature: 0, windowStart: 1 };
+      }
+      // In fullAtStart mode every branch exists from the first frame; the
+      // birth-window factor is therefore always 1 and leaves/branches show
+      // immediately at their young size.
+      if (fullAtStart) {
+        return { g: () => ({ l: 1, r: 1 }), born: 0, mature: 0, windowStart: 0 };
+      }
+      const w = Tree.growthWindows[Math.min(sb.level, Tree.growthWindows.length - 1)];
+      const width = Math.max(1e-6, w.end - w.start);
+      let stagger = 0;
+      if (sb.user) {
+        const ub = sb.user;
+        stagger = -0.08 * (ub.t ?? 0.5) - 0.02 * ((ub.id ?? 0) % 4);
+      } else {
+        // Procedural child: sibling index from the path's trailing number
+        // (e.g. "0.3" → 3). Tip continuations ("0.2c") and roots ("0.root0")
+        // don't match and keep stagger 0 — they appear with their parent.
+        const m = sb.path.match(/\.(\d+)$/);
+        if (m) {
+          const parentPath = sb.path.slice(0, sb.path.lastIndexOf('.'));
+          let count = 1;
+          for (const other of this.skeleton.branches) {
+            if (other === sb) continue;
+            const om = other.path.match(/\.(\d+)$/);
+            if (om && other.path.slice(0, other.path.lastIndexOf('.')) === parentPath) {
+              count++;
+            }
+          }
+          if (count > 1) stagger = -0.05 * (parseInt(m[1], 10) / (count - 1));
+        }
+      }
+      const g = (p) => {
+        // Same math as #growthLevel(level, stagger): mature once the window
+        // has ended (stagger delays only the birth), bud at 35% length /
+        // 80% radius inside the window, smoothstep between.
+        if (p >= w.end) return { l: 1, r: 1 };
+        const pp = Math.min(1, Math.max(0, p + stagger));
+        const local = (pp - w.start) / width;
+        if (local < 0) return { l: 0, r: 0.8 };
+        const s = local >= 1 ? 1 : local * local * (3 - 2 * local);
+        return { l: 0.35 + 0.65 * s, r: 0.8 + 0.2 * s };
+      };
+      return {
+        g,
+        born: Math.min(1, Math.max(0, w.start + 0.08 * width - stagger)),
+        mature: Math.min(1, w.end),
+        windowStart: w.start,
+      };
+    };
+
+    /**
+     * A branch's ABSOLUTE world-scale target over time, in its own frame:
+     *   W(p) = k(p) × g(p)
+     * where g is the birth-window factor (growthInfoOf) and k is the
+     * small→big parameter interpolation for the branch's level. Branches
+     * whose size does NOT come from the interpolated per-level params
+     * (explicit length/radius overrides, buttress roots) keep k = 1.
+     * @param {{path: string, level: number, user?: object}} sb
+     * @param {{g: (p:number)=>{l:number,r:number}}} info
+     */
+    const absScaleOf = (sb, info) => {
+      const ratios = levelRatios[sb.level] ?? { lScale: 1, rScale: 1 };
+      const ov = (this.options.branch.overrides && this.options.branch.overrides[sb.path]) || {};
+      const root = isRootBranch(sb);
+      const lStatic = root || ov.length != null;
+      const rStatic = root || (sb.user && (ov.radius != null || ov.radiusAbs != null));
+      const l = (p) => {
+        const k = lStatic ? 1 : ratios.lScale + (1 - ratios.lScale) * easeP(p);
+        return k * info.g(p).l;
+      };
+      const r = (p) => {
+        const k = rStatic ? 1 : ratios.rScale + (1 - ratios.rScale) * easeP(p);
+        return k * info.g(p).r;
+      };
+      return { l, r };
+    };
+
+    /**
+     * Branch scale track. Two different semantics, matching the runtime
+     * generator exactly:
+     *  - RADIUS compounds down the hierarchy (the runtime computes a child's
+     *    radius as its param × the parent's CURRENT section radius), so the
+     *    local r track is simply the branch's own absolute W_r — the GLB
+     *    parent chain reproduces the compounding for free.
+     *  - LENGTH is ABSOLUTE in the runtime (param × own window, independent
+     *    of the parent's length), so the local l track must DIVIDE OUT the
+     *    parent's length factor, cancelling the hierarchy's scaling. The
+     *    attachment point still rides the parent because it lives in the
+     *    parent's local frame — only the child's own geometry is corrected.
+     * Keyframes span the whole timeline [born, 1]: through the birth window
+     * the window factor dominates, afterwards only the small→big parameter
+     * interpolation keeps evolving (the trunk keeps growing until p = 1,
+     * exactly like the scene).
+     */
+    const pushBranchTrack = (node, sb, info, absW, parentAbsW) => {
+      const budAtStart = info.windowStart <= 1e-3;
+      const times = [];
+      const values = [];
+      if (!budAtStart && info.born > 1e-4) {
+        times.push(0);
+        values.push(0, 0, 0);
+      }
+      const ps = [info.born];
+      const wSpan = Math.max(0, info.mature - info.born);
+      for (const f of [0.25, 0.5, 0.75, 1]) ps.push(info.born + wSpan * f);
+      const tail = Math.max(0, 1 - info.mature);
+      for (const f of [0.25, 0.5, 0.75, 1]) ps.push(info.mature + tail * f);
+      ps.sort((a, b) => a - b);
+      let lastT = -1;
+      for (const p of ps) {
+        if (p > 1 + 1e-9) break;
+        const wr = absW.r(p);
+        const wl = absW.l(p);
+        const sl = parentAbsW ? wl / Math.max(1e-6, parentAbsW.l(p)) : wl;
+        const t = Math.min(1, p) * duration;
+        if (times.length && t - lastT < 1e-4) continue;
+        lastT = t;
+        times.push(t);
+        values.push(wr, wr, sl);
+      }
+      tracks.push(new THREE.VectorKeyframeTrack(node.uuid + '.scale', times, values));
+    };
+
+    /**
+     * Empirical branch tracks baked from the sampled runtime skeletons.
+     * For every sample the runtime branch's attach point, mean direction
+     * (attach→tip chord) and size factors form a target world matrix
+     *   G(p) · diag(vr, vr, vl)
+     * which is converted into the parent's ANIMATED local frame and
+     * decomposed into position / quaternion / scale keyframes. The
+     * quaternion track is what lets mid-growth branches that swing away
+     * from their rest direction (small→big angle interpolation, S-curved
+     * spines, user-branch chains) still track the scene — a scale-only
+     * track stretches along the REST axis and cannot reproduce a swing.
+     * Children are converted against the RECOMPOSED matrix (from the
+     * decomposed values actually pushed to the tracks), so what they see
+     * is exactly what the GLB will apply.
+     * @returns {{chain: object, animW: Map<number, THREE.Matrix4>}|null}
+     *   chain: world-scale factors for leaf-group compensation;
+     *   animW: per-sample animated world matrices for children / leaves.
+     */
+    const pushMeasuredTracks = (node, sb, idx, parentNode) => {
+      if (!sampleSeries) return null;
+      const path = sb.path;
+      const ref = bigRef.get(path);
+      if (!ref) return null;
+      const frame = frames[idx];
+      const restAttach = sb.sections[0].origin;
+      const restTip = sb.sections[sb.sections.length - 1].origin;
+      const restChord = restAttach.distanceTo(restTip);
+      const restZProj = new THREE.Vector3()
+        .subVectors(restTip, restAttach)
+        .dot(frame.zAxis);
+      // Projection ratio is the accurate metric (it places the tip along
+      // the branch axis), but unstable when the rest spine curls past
+      // perpendicular — fall back to the chord ratio there.
+      const projStable = Math.abs(restZProj) > 0.15 * restChord && restChord > 1e-9;
+
+      const raw = [];
+      for (const [p, m] of sampleSeries) {
+        const e = m.get(path);
+        if (!e) continue;
+        let vl;
+        if (projStable) {
+          vl = e.wz / restZProj;
+          if (!Number.isFinite(vl)) vl = e.chord / restChord;
+          vl = Math.min(30, Math.max(0.02, vl));
+        } else {
+          vl = restChord > 1e-9 ? e.chord / restChord : 1;
+        }
+        raw.push({
+          p,
+          attach: e.attach,
+          dir: e.dir,
+          chord: e.chord,
+          vr: ref.baseRad > 1e-9 ? e.baseRad / ref.baseRad : 1,
+          vl,
+        });
+      }
+      // Zero until the branch actually appears in the runtime tree (a
+      // zero-length but non-zero-radius scale would flatten the tube into
+      // a visible disc).
+      const vis = raw.filter((s) => s.dir && s.chord > 1e-4);
+      if (!vis.length) return null;
+      const parentAnimW = parentNode && parentNode.animW ? parentNode.animW : null;
+      const parentChain = parentNode ? parentNode.chain : null;
+
+      // The parent's animated world matrix at p. When the parent fell back
+      // to the analytic tracks — or its baked matrix is momentarily
+      // degenerate (a near-zero scale makes the exact inverse explode) —
+      // approximate it as its rest world matrix scaled diagonally by the
+      // world chain factors.
+      const minColNorm = (w) => {
+        const e = w.elements;
+        const nx = Math.hypot(e[0], e[1], e[2]);
+        const ny = Math.hypot(e[4], e[5], e[6]);
+        const nz = Math.hypot(e[8], e[9], e[10]);
+        return Math.min(nx, ny, nz);
+      };
+      const parentWorldAt = (p) => {
+        if (parentAnimW) {
+          // nearest sample (children key at their own sample p's)
+          let best = null;
+          let bd = Infinity;
+          for (const [pk, w] of parentAnimW) {
+            const d = Math.abs(pk - p);
+            if (d < bd) { bd = d; best = w; }
+          }
+          if (best && minColNorm(best) > 0.02) return best;
+        }
+        if (!parentNode) return null;
+        const wv = Math.max(1e-6, parentChain ? parentChain.vrAt(p) : 1);
+        const wl = Math.max(1e-6, parentChain ? parentChain.vlAt(p) : 1);
+        return worldMat[parentNode.idx].clone()
+          .multiply(new THREE.Matrix4().makeScale(wv, wv, wl));
+      };
+
+      const keys = [];
+      for (const s of vis) {
+        // Target frame: z along the runtime FIRST-SECTION direction (equals
+        // the rest direction at p = 1, so the final pose is the rest pose),
+        // radial axes kept as close to the REST radial axes as possible
+        // (no twist jumps between samples).
+        const zAxis = s.dir.clone();
+        const xAxis = frame.xAxis.clone().addScaledVector(zAxis, -frame.xAxis.dot(zAxis));
+        if (xAxis.lengthSq() < 1e-8) {
+          xAxis.copy(frame.yAxis).addScaledVector(zAxis, -frame.yAxis.dot(zAxis));
+        }
+        if (xAxis.lengthSq() < 1e-8) {
+          xAxis.set(1, 0, 0).addScaledVector(zAxis, -zAxis.x);
+        }
+        xAxis.normalize();
+        const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+        const target = new THREE.Matrix4()
+          .makeBasis(xAxis, yAxis, zAxis)
+          .setPosition(s.attach)
+          .multiply(new THREE.Matrix4().makeScale(s.vr, s.vr, s.vl));
+        const M = target;
+        const pw = parentWorldAt(s.p);
+        if (pw) M.premultiply(pw.clone().invert());
+        const pos = new THREE.Vector3();
+        const quat = new THREE.Quaternion();
+        const scl = new THREE.Vector3();
+        M.decompose(pos, quat, scl);
+        // Recompose from the DECOMPOSED values — decompose is lossy for
+        // sheared matrices, and children must convert against the matrix
+        // the GLB will actually apply.
+        const W = new THREE.Matrix4().compose(pos, quat, scl);
+        if (pw) W.premultiply(pw);
+        keys.push({ p: s.p, pos, quat, scl, W });
+      }
+
+      // keyframes: hold the first pose before birth (scale 0 hides it).
+      const sTimes = [];
+      const sValues = [];
+      const pTimes = [];
+      const pValues = [];
+      const qTimes = [];
+      const qValues = [];
+      const k0 = keys[0];
+      if (k0.p > 1e-4) {
+        const t0 = k0.p * duration;
+        sTimes.push(0, t0);
+        sValues.push(0, 0, 0, 0, 0, 0);
+        pTimes.push(0, t0);
+        pValues.push(k0.pos.x, k0.pos.y, k0.pos.z, k0.pos.x, k0.pos.y, k0.pos.z);
+        qTimes.push(0, t0);
+        qValues.push(
+          k0.quat.x, k0.quat.y, k0.quat.z, k0.quat.w,
+          k0.quat.x, k0.quat.y, k0.quat.z, k0.quat.w,
+        );
+      }
+      let lastT = sTimes.length ? sTimes[sTimes.length - 1] : -1;
+      for (const k of keys) {
+        const t = k.p * duration;
+        if (t - lastT < 1e-4) continue;
+        lastT = t;
+        sTimes.push(t);
+        sValues.push(k.scl.x, k.scl.y, k.scl.z);
+        pTimes.push(t);
+        pValues.push(k.pos.x, k.pos.y, k.pos.z);
+        qTimes.push(t);
+        qValues.push(k.quat.x, k.quat.y, k.quat.z, k.quat.w);
+      }
+      tracks.push(new THREE.VectorKeyframeTrack(node.uuid + '.scale', sTimes, sValues));
+      tracks.push(new THREE.VectorKeyframeTrack(node.uuid + '.position', pTimes, pValues));
+      tracks.push(new THREE.QuaternionKeyframeTrack(node.uuid + '.quaternion', qTimes, qValues));
+
+      // World-scale chain factors + animated world matrices for children
+      // and leaf groups.
+      const vrSeries = new Map(vis.map((s) => [s.p, s.vr]));
+      const chain = {
+        vrAt: (p) => (parentChain ? parentChain.vrAt(p) : 1) * lerpMap(vrSeries, p),
+        vlAt: (p) => lerpMap(vlByPath.get(path), p),
+      };
+      const animW = new Map(keys.map((k) => [k.p, k.W]));
+      return { chain, animW };
+    };
+    /**
+     * Leaf-group scale track: the birth window (0 → 1 over the last stretch
+     * of the owner branch's window) times an optional per-axis factor that
+     * cancels the owner branch's inherited world scaling, so the leaves keep
+     * their ABSOLUTE interpolated size (small-tree leaves → big-tree leaves)
+     * instead of shrinking with the branch they ride on. Keys extend to
+     * p = 1 because the factor keeps evolving after the window closes.
+     * @param {THREE.Object3D} node
+     * @param {number} bornP
+     * @param {number} matureP
+     * @param {(p: number) => {x: number, y: number, z: number}} [factor]
+     */
+    const pushLeafTrack = (node, bornP, matureP, factor) => {
+      const born = Math.max(0, bornP);
+      const span = Math.max(1e-6, matureP - born);
+      const f = typeof factor === 'function'
+        ? (p) => factor(p)
+        : () => ({ x: 1, y: 1, z: 1 });
+      const times = [];
+      const values = [];
+      if (bornP > 1e-4) {
+        times.push(0);
+        values.push(0, 0, 0);
+      }
+      const ps = [];
+      for (const x of [0, 0.5, 1]) ps.push(born + span * x);
+      if (matureP < 1 - 1e-4) {
+        for (const x of [0.25, 0.5, 0.75, 1]) ps.push(matureP + (1 - matureP) * x);
+      }
+      ps.sort((a, b) => a - b);
+      let lastT = -1;
+      for (const p of ps) {
+        const w = p <= born ? 0 : p >= matureP ? 1 : (p - born) / span;
+        const s = w >= 1 ? 1 : 0.2 + 0.8 * (w * w * (3 - 2 * w));
+        const fc = f(Math.min(1, Math.max(0, p)));
+        const t = p * duration;
+        if (times.length && t - lastT < 1e-4) continue;
+        lastT = t;
+        times.push(t);
+        values.push(s * fc.x, s * fc.y, s * fc.z);
+      }
+      tracks.push(new THREE.VectorKeyframeTrack(node.uuid + '.scale', times, values));
+    };
+
+    // ---- branch meshes: one node per branch, parented to its skeleton
+    // ---- parent, geometry in the branch's own local frame.
+    const nodes = [];
+    branches.forEach((sb, idx) => {
+      const buffers = { verts: [], normals: [], uvs: [], indices: [], branchIndex: [] };
+      this.#meshBranch(buffers, sb, idx, 1, 1);
+      localizeBuffers(buffers, frames[idx]);
+      const mesh = new THREE.Mesh(this.#buildBufferGeometry(buffers), barkMaterial);
+      mesh.name = `Branch_${idx}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      const pIdx = parentIndex(idx);
+      const parentNode = pIdx >= 0 && nodes[pIdx] ? nodes[pIdx] : null;
+      const parentObj = parentNode ? parentNode.mesh : rig;
+      parentObj.add(mesh);
+      // Every node — including the trunk under the rig — gets its local
+      // transform from the inverse chain, so its frame (origin + basis) is
+      // applied exactly once and children land on their attachment points.
+      const parentMat = parentNode ? worldMat[pIdx] : new THREE.Matrix4().identity();
+      const local = new THREE.Matrix4().copy(parentMat).invert().multiply(worldMat[idx]);
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      local.decompose(pos, quat, scl);
+      mesh.position.copy(pos);
+      mesh.quaternion.copy(quat);
+
+      const info = growthInfoOf(sb);
+      const absW = absScaleOf(sb, info);
+      // Prefer the empirically baked tracks (measured attach / direction /
+      // length / radius of the runtime tree sampled over the timeline);
+      // fall back to the analytic curves only when sampling is unavailable.
+      const baked = pushMeasuredTracks(mesh, sb, idx, parentNode);
+      if (!baked) pushBranchTrack(mesh, sb, info, absW, parentNode ? parentNode.absW : null);
+      // World-scale chain factors for children / leaf groups. Measured nodes
+      // carry their sampled factors; analytic fallback nodes approximate the
+      // chain with their closed-form absolute factors.
+      const chain = baked.chain || (parentNode && parentNode.chain
+        ? {
+          vrAt: (p) => parentNode.chain.vrAt(p) * absW.r(p),
+          vlAt: (p) => parentNode.chain.vlAt(p) * absW.l(p),
+        }
+        : { vrAt: absW.r, vlAt: absW.l });
+      nodes.push({
+        mesh, sb, idx, pIdx, born: info.born, mature: info.mature, absW, chain,
+        animW: baked.animW || null,
+      });
+    });
+
+    // ---- sapling leaves: several small rings on the young trunk so t=0
+    // ---- already looks like a leafy seedling. The runtime gates terminal
+    // ---- branches by level windows, so without these the canopy would be
+    // ---- almost bare until the first twigs are born. Multiple rings with
+    // ---- enough instances give continuous foliage from the very start.
+    const trunkIdx = branches.findIndex((sb) => sb.path === '0');
+    if (trunkIdx >= 0 && this.options.leaves) {
+      const secs = branches[trunkIdx].sections;
+      // Use the small-tree leaf size so the early canopy does not look tiny.
+      const leafSize = (this.options.leaves.size ?? 0.5) * leafSizeRatio;
+      const buf = { verts: [], normals: [], uvs: [], indices: [] };
+      let i0 = 0;
+      const rings = [0.22, 0.42, 0.62, 0.82];
+      for (let rIdx = 0; rIdx < rings.length; rIdx++) {
+        const along = rings[rIdx];
+        let A = secs[0];
+        let B = secs[secs.length - 1];
+        for (let k = 0; k < secs.length - 1; k++) {
+          const t0 = secs[k].t ?? k / (secs.length - 1);
+          const t1 = secs[k + 1].t ?? (k + 1) / (secs.length - 1);
+          if (along >= t0 && along <= t1) { A = secs[k]; B = secs[k + 1]; break; }
+        }
+        const f01 = Math.min(1, Math.max(0,
+          (along - (A.t ?? 0)) / (((B.t ?? 1) - (A.t ?? 0)) || 1e-9)));
+        const radius = A.radius + (B.radius - A.radius) * f01;
+        const z = A.origin.distanceTo(secs[0].origin)
+          + new THREE.Vector3().subVectors(B.origin, A.origin).length() * f01;
+        const rRing = Math.max(0.06, radius * 2.0);
+        const count = 8;
+        for (let i = 0; i < count; i++) {
+          const th = (i / count) * Math.PI * 2 + rIdx * 0.7;
+          const cx = Math.cos(th) * rRing;
+          const cy = Math.sin(th) * rRing;
+          const rad = [Math.cos(th), Math.sin(th)];
+          const hw = leafSize * 0.5;
+          const pts = [
+            [cx + rad[0] * hw, cy + rad[1] * hw, z + hw * 0.8],
+            [cx - rad[0] * hw, cy - rad[1] * hw, z + hw * 0.8],
+            [cx - rad[0] * hw, cy - rad[1] * hw, z - hw * 0.8],
+            [cx + rad[0] * hw, cy + rad[1] * hw, z - hw * 0.8],
+          ];
+          const nx = -rad[1];
+          const ny = rad[0];
+          for (const [px, py, pz] of pts) {
+            buf.verts.push(px, py, pz);
+            buf.normals.push(nx, ny, 0);
+            buf.uvs.push(0, 0);
+          }
+          buf.indices.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
+          i0 += 4;
+        }
+      }
+      const mesh = new THREE.Mesh(this.#buildBufferGeometry(buf), leafMaterial);
+      mesh.name = 'SeedlingLeaves';
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      nodes[trunkIdx].mesh.add(mesh);
+      // Counter-scale the trunk's radial growth so the rings keep their
+      // absolute sapling size and hug the trunk as it thickens. The z axis is
+      // left at 1 so the rings ride up automatically as the trunk elongates.
+      const trunkChain = nodes[trunkIdx].chain;
+      const trunkAnimW = nodes[trunkIdx].animW;
+      if (trunkChain || trunkAnimW) {
+        const radialAt = (p) => {
+          if (trunkAnimW && trunkAnimW.size) {
+            let best = null;
+            let bd = Infinity;
+            for (const [pk, w] of trunkAnimW) {
+              const d = Math.abs(pk - p);
+              if (d < bd) { bd = d; best = w; }
+            }
+            if (best) {
+              const e = best.elements;
+              return Math.hypot(e[0], e[1], e[2]);
+            }
+          }
+          return trunkChain ? trunkChain.vrAt(p) : 1;
+        };
+        const times = [];
+        const values = [];
+        for (const p of [0, 0.15, 0.3, 0.5, 0.75, 1]) {
+          const invR = 1 / Math.max(0.02, radialAt(p));
+          times.push(p * duration);
+          values.push(invR, invR, 1);
+        }
+        tracks.push(new THREE.VectorKeyframeTrack(mesh.uuid + '.scale', times, values));
+      }
+    }
+
+    // ---- leaf groups: leaves grouped by their nearest branch, anchored at
+    // ---- the group's centroid in that branch's frame.
+    const leavesLevel = Math.min(
+      this.options.leaves.level ?? this.options.branch.levels,
+      this.options.branch.levels,
+    );
+    const candidates = nodes.filter((n) => n.sb.level >= leavesLevel);
+    const fallbackCandidates = candidates.length ? candidates : nodes;
+
+    const groupBuffers = new Map(); // branch idx → buffers
+    const groupBirth = new Map();   // branch idx → {born, mature, width}
+    const groupAnchor = new Map();  // branch idx → {x, y, z, count} (world avg)
+    const leaves = this.skeleton.leaves;
+    for (let li = 0; li < leaves.length; li++) {
+      const leaf = leaves[li];
+      const o = leaf.origin;
+      let best = null;
+      let bestD = Infinity;
+      for (const n of fallbackCandidates) {
+        const sections = n.sb.sections;
+        for (let k = 0; k < sections.length - 1; k++) {
+          const a = sections[k].origin;
+          const b = sections[k + 1].origin;
+          const abx = b.x - a.x;
+          const aby = b.y - a.y;
+          const abz = b.z - a.z;
+          const len2 = abx * abx + aby * aby + abz * abz || 1e-9;
+          let alpha = ((o.x - a.x) * abx + (o.y - a.y) * aby + (o.z - a.z) * abz) / len2;
+          alpha = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+          const dx = o.x - (a.x + abx * alpha);
+          const dy = o.y - (a.y + aby * alpha);
+          const dz = o.z - (a.z + abz * alpha);
+          const d = dx * dx + dy * dy + dz * dz;
+          if (d < bestD) {
+            bestD = d;
+            best = n;
+          }
+        }
+      }
+      if (!best) continue;
+      const key = best.idx;
+      if (!groupBuffers.has(key)) {
+        groupBuffers.set(key, { verts: [], normals: [], uvs: [], indices: [] });
+        groupBirth.set(key, growthInfoOf(best.sb));
+      }
+      if (leaf.slab) {
+        this.#meshSlab(groupBuffers.get(key), leaf, 1);
+      } else {
+        this.#meshLeaf(groupBuffers.get(key), leaf, 1, this.options.leaves.billboard);
+      }
+      const acc = groupAnchor.get(key) || { x: 0, y: 0, z: 0, count: 0 };
+      acc.x += o.x;
+      acc.y += o.y;
+      acc.z += o.z;
+      acc.count++;
+      groupAnchor.set(key, acc);
+    }
+
+    for (const [key, buffers] of groupBuffers) {
+      const parentNode = nodes[key];
+      const frame = frames[key];
+      const acc = groupAnchor.get(key);
+      const anchorW = new THREE.Vector3(acc.x / acc.count, acc.y / acc.count, acc.z / acc.count);
+      const anchorLocal = toLocal(frame, anchorW.clone());
+      localizeBuffers(buffers, { origin: anchorW, R: frame.R, Rt: frame.Rt });
+      const mesh = new THREE.Mesh(this.#buildBufferGeometry(buffers), leafMaterial);
+      mesh.name = `Leaves_${key}`;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      parentNode.mesh.add(mesh);
+      mesh.position.copy(anchorLocal);
+
+      const { born, mature } = groupBirth.get(key);
+      // Leaves appear as soon as the branch itself becomes visible, then
+      // grow from a small bud to their full interpolated size. This mirrors
+      // the runtime where leaves are present from the start and ramp up.
+      // In fullAtStart mode the branch is already visible at t=0, so the
+      // leaves are too.
+      const leafBorn = fullAtStart ? 0 : born;
+      // Cancel the owner branch's inherited world scaling per axis so the
+      // leaves keep their ABSOLUTE interpolated size (small → big) instead
+      // of shrinking with the branch; kLeaf mirrors GrowthController's
+      // leaves.size interpolation over the whole timeline. With baked
+      // rotation tracks the owner's animated world matrix (nearest sample)
+      // gives the exact per-axis world scale.
+      const kLeaf = (p) => leafSizeRatio + (1 - leafSizeRatio) * easeP(p);
+      const ownerAnimW = parentNode.animW;
+      const leafChain = parentNode.chain || { vrAt: () => 1, vlAt: () => 1 };
+      const axisNorm = (p, col) => {
+        if (ownerAnimW && ownerAnimW.size) {
+          let best = null;
+          let bd = Infinity;
+          for (const [pk, w] of ownerAnimW) {
+            const d = Math.abs(pk - p);
+            if (d < bd) { bd = d; best = w; }
+          }
+          if (best) {
+            const e = best.elements;
+            const o = col * 4;
+            return Math.hypot(e[o], e[o + 1], e[o + 2]);
+          }
+        }
+        return col === 2 ? leafChain.vlAt(p) : leafChain.vrAt(p);
+      };
+      const leafFactor = (p) => ({
+        x: kLeaf(p) / Math.max(0.02, axisNorm(p, 0)),
+        y: kLeaf(p) / Math.max(0.02, axisNorm(p, 1)),
+        z: kLeaf(p) / Math.max(0.02, axisNorm(p, 2)),
+      });
+      pushLeafTrack(mesh, leafBorn, mature, sampleSeries ? leafFactor : undefined);
+    }
+
+    // ---- optional whole-tree scale animation (sapling scale → 1) ----
+    // opts.scaleStart is the small tree's ABSOLUTE scale; the root already
+    // carries the big tree's static scale, so animate the RELATIVE ratio
+    // (small/big → 1) with the same smoothstep ease the runtime uses.
+    // A matching position track lifts the rig so the tree's lowest point
+    // (buttress roots, low branches that dip below y=0 at any progress
+    // value) stays at world y = 0 throughout — no floating.
+    if (
+      typeof opts.scaleStart === 'number'
+      && opts.scaleStart > 0
+      && Math.abs(opts.scaleStart - 1) > 1e-3
+    ) {
+      const bigScale = (typeof treeScale === 'number' && treeScale > 0) ? treeScale : 1;
+      const s0 = Math.max(1e-4, opts.scaleStart / bigScale);
+      if (Math.abs(s0 - 1) > 1e-3) {
+        const keyframes = [0, 0.25, 0.5, 0.75, 1];
+        const times = [];
+        const scaleVals = [];
+        for (const f of keyframes) {
+          const s = s0 + (1 - s0) * easeP(f);
+          times.push(f * duration);
+          scaleVals.push(s, s, s);
+        }
+        tracks.push(new THREE.VectorKeyframeTrack(rig.uuid + '.scale', times, scaleVals));
+
+        // Evaluate the animation (with all tracks so far, including the
+        // per-branch empirical baking) at each keyframe to measure the ACTUAL
+        // world-space lowest point. The ground offset must cover the worst
+        // case across the whole timeline, not just the rest pose.
+        const tempClip = new THREE.AnimationClip('_groundProbe', duration, tracks);
+        const tempMixer = new THREE.AnimationMixer(scene);
+        const tempAction = tempMixer.clipAction(tempClip);
+        tempAction.play();
+        const posVals = [];
+        let needsPosTrack = false;
+        for (let i = 0; i < keyframes.length; i++) {
+          tempMixer.setTime(keyframes[i] * duration);
+          scene.updateMatrixWorld(true);
+          const box = new THREE.Box3().setFromObject(root);
+          const offset = Math.max(0, -box.min.y);
+          if (offset > 0.01) needsPosTrack = true;
+          posVals.push(0, offset, 0);
+        }
+        // Restore rest pose so the caller sees a clean scene.
+        tempMixer.uncacheAction(tempAction);
+        rig.position.set(0, 0, 0);
+        rig.scale.set(1, 1, 1);
+        scene.updateMatrixWorld(true);
+
+        if (needsPosTrack) {
+          tracks.push(new THREE.VectorKeyframeTrack(rig.uuid + '.position', times, posVals));
+        }
+      }
+    }
+
+    const clip = new THREE.AnimationClip('TreeGrowth', duration, tracks);
+    return { scene, clip, duration };
+  }
+
+  /**
+   * Builds a crossfade export scene for structurally different small/big
+   * trees. Two complete tree models are generated independently; the small
+   * one stays visible at the start while the big one scales up from the
+   * small height, then the small one shrinks away so the clip ends on the
+   * big tree alone.
+   */
+  #createDualTreeExportScene(opts) {
+    const duration = opts.duration ?? 12;
+    const smallOpts = opts.smallOptions;
+    const bigOpts = this.options;
+
+    const smallTree = new Tree(smallOpts);
+    smallTree.generate();
+    const bigTree = new Tree(bigOpts);
+    bigTree.generate();
+
+    const scene = new THREE.Scene();
+    scene.name = 'TreeGrowth';
+
+    const root = new THREE.Group();
+    root.name = 'Tree';
+    scene.add(root);
+
+    const easeP = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+    const addTree = (tree, name) => {
+      const group = new THREE.Group();
+      group.name = name;
+      const box = new THREE.Box3().setFromObject(tree);
+      const groundOffset = Math.max(0, -box.min.y);
+      if (groundOffset > 0.01) group.position.y = groundOffset;
+      // Rename the inner tree so its name does not collide with the group
+      // name; GLTFExporter resolves animation tracks by node name.
+      tree.name = `${name}Geo`;
+      group.add(tree);
+      root.add(group);
+      return { group, box, groundOffset, height: box.max.y - box.min.y };
+    };
+
+    const smallData = addTree(smallTree, 'SmallTree');
+    const bigData = addTree(bigTree, 'BigTree');
+
+    // The big tree starts nearly invisible so the first frame reads as the
+    // real small tree alone. It then grows to full size while the small tree
+    // shrinks away in the second half of the clip.
+    const bigScaleStart = 0.02;
+    const bigScaleEnd = 1;
+
+    const smallTimes = [];
+    const smallScales = [];
+    const bigTimes = [];
+    const bigScales = [];
+    for (const f of [0, 0.15, 0.3, 0.5, 0.75, 1]) {
+      const t = f * duration;
+      const e = easeP(f);
+      smallTimes.push(t);
+      // Small tree keeps its natural size for the first ~50%, then shrinks
+      // to nothing so the big tree can take over without overlap.
+      const smallS = f < 0.5 ? 1 : 1 - (f - 0.5) / 0.5;
+      smallScales.push(smallS, smallS, smallS);
+
+      bigTimes.push(t);
+      const bigS = bigScaleStart + (bigScaleEnd - bigScaleStart) * e;
+      bigScales.push(bigS, bigS, bigS);
+    }
+
+    const tracks = [
+      new THREE.VectorKeyframeTrack('SmallTree.scale', smallTimes, smallScales),
+      new THREE.VectorKeyframeTrack('BigTree.scale', bigTimes, bigScales),
+    ];
+
+    const clip = new THREE.AnimationClip('TreeGrowth', duration, tracks);
+    return { scene, clip, duration };
   }
 
   /**
@@ -274,14 +1548,15 @@ export class Tree extends THREE.Group {
 
     const usePerBranch = this.options.rngMode === 'perBranch';
     const trunkRng = usePerBranch ? this.#makeRng('0') : null;
+    const trunkG = this.#growthLevel(0);
 
     // Create the trunk of the tree first
     this.branchQueue.push(
       new Branch(
         new THREE.Vector3(),
         new THREE.Euler(),
-        this.options.branch.length[0],
-        this.options.branch.radius[0],
+        this.options.branch.length[0] * (trunkG?.length ?? 1),
+        this.options.branch.radius[0] * (trunkG?.radius ?? 1),
         0,
         this.options.branch.sections[0],
         this.options.branch.segments[0],
@@ -298,6 +1573,54 @@ export class Tree extends THREE.Group {
     // Stage F: user-placed branches grow AFTER the procedural tree, each
     // from its own RNG stream, so they never shift the main tree's shape.
     this.#growUserBranches();
+  }
+
+  /**
+   * Async, chunked variant of {@link #generateSkeleton}. Grows the tree one
+   * branch at a time but yields to the browser every CHUNK branches so the
+   * main thread stays responsive on large trees. Produces the same skeleton.
+   * @returns {Promise<void>}
+   */
+  async #generateSkeletonAsync() {
+    this.skeleton = {
+      branches: [],
+      leaves: [],
+    };
+
+    this.rng = new RNG(this.options.seed);
+    this.trunkLength = 1;
+
+    const usePerBranch = this.options.rngMode === 'perBranch';
+    const trunkRng = usePerBranch ? this.#makeRng('0') : null;
+    const trunkG = this.#growthLevel(0);
+
+    // Create the trunk of the tree first
+    this.branchQueue.push(
+      new Branch(
+        new THREE.Vector3(),
+        new THREE.Euler(),
+        this.options.branch.length[0] * (trunkG?.length ?? 1),
+        this.options.branch.radius[0] * (trunkG?.radius ?? 1),
+        0,
+        this.options.branch.sections[0],
+        this.options.branch.segments[0],
+        '0',
+        trunkRng,
+      ),
+    );
+
+    let processed = 0;
+    while (this.branchQueue.length > 0) {
+      const branch = this.branchQueue.shift();
+      this.#growBranch(branch);
+      // Hand control back to the browser every 64 branches so the UI can
+      // paint, the camera can keep orbiting, and inputs don't pile up.
+      if ((++processed & 63) === 0) await yieldToBrowser();
+    }
+
+    // Stage F: user-placed branches grow AFTER the procedural tree, each
+    // from its own RNG stream, so they never shift the main tree's shape.
+    await this.#growUserBranchesAsync();
   }
 
   // --------------------------------------------------------------------------
@@ -349,6 +1672,91 @@ export class Tree extends THREE.Group {
   /** Number of children a branch spawns, honoring its override. */
   #branchChildren(branch) {
     return this.#branchParam(branch, 'children', this.options.branch.children[branch.level]);
+  }
+
+  // --------------------------------------------------------------------------
+  // Growth animation (sapling → full tree)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Growth state for a branch level at the current growth progress. Returns
+   * null when growth is disabled — the fast path so normal generation costs
+   * nothing extra. `stagger` shifts the level's window for a single branch
+   * (e.g. user branches or siblings appear a beat later), in the SAME 0..1
+   * progress units.
+   * @param {number} level
+   * @param {number} [stagger=0] signed progress offset for per-branch stagger
+   * @returns {{length: number, radius: number}|null}
+   */
+  #growthLevel(level, stagger = 0) {
+    const g = this.options.growth;
+    if (!g || !g.enabled) return null;
+    const w = Tree.growthWindows[Math.min(level, Tree.growthWindows.length - 1)];
+    const pRaw = Math.min(1, Math.max(0, g.progress ?? 1));
+    // Fully mature once the level's window has ended. Stagger shifts only the
+    // BIRTH inside the window — at the end of the timeline every branch must
+    // be full size, or p=1 would never equal the big-tree baseline.
+    if (pRaw >= w.end) return { length: 1, radius: 1 };
+    const p = Math.min(1, Math.max(0, pRaw + stagger));
+    const local = (p - w.start) / Math.max(1e-6, w.end - w.start);
+    if (local < 0) {
+      // Window not entered yet: not born. The trunk's window starts at 0 so
+      // it is always "born" (the sapling is a trunk) — handled below.
+      return { length: 0, radius: 0.8 };
+    }
+    const s = local >= 1 ? 1 : local * local * (3 - 2 * local);
+    return {
+      // A just-born branch is already a visible bud (35% of its target
+      // length) that stretches out to full size — never a degenerate stub.
+      length: 0.35 + 0.65 * s,
+      // Radius lags length so young branches read as thin new growth.
+      radius: 0.8 + 0.2 * s,
+    };
+  }
+
+  /**
+   * Number of children a branch should spawn at the current growth progress.
+   * Ramps `base` from 0 up to `base` inside the CHILD level's birth window,
+   * so an entire level of branches pops in gradually instead of all at once.
+   * @param {number} childLevel
+   * @param {number} base
+   */
+  #growthChildren(childLevel, base) {
+    const g = this.#growthLevel(childLevel);
+    if (!g) return base;
+    return Math.max(0, Math.round(base * (g.length - 0.35) / 0.65));
+  }
+
+  /**
+   * Per-child growth stagger (in progress units, negative = later). Children
+   * further up the parent (larger i) are "newer" growth and appear a beat
+   * later, so a level of branches cascades up the trunk instead of popping
+   * in all at once.
+   * @param {number} i child index within its parent
+   * @param {number} count total children
+   */
+  #growthStagger(i, count) {
+    return count > 1 ? -0.05 * (i / (count - 1)) : 0;
+  }
+
+  /**
+   * Deepest branch level whose birth window has started at the current
+   * progress. Used to decide which level is the "terminal" (leaf-bearing)
+   * level: a young tree carries leaves on the trunk / early branches, so the
+   * canopy is never bare.
+   */
+  #grownMaxLevel() {
+    const p = Math.min(1, Math.max(0, this.options.growth?.progress ?? 1));
+    let max = 0;
+    for (let i = 0; i < Tree.growthWindows.length; i++) {
+      const w = Tree.growthWindows[i];
+      // A level only counts as "growing" once branches actually exist on it:
+      // the skip threshold (length >= 0.36) is crossed ~8% into the window.
+      // Using the raw window start would pick levels whose branches are all
+      // still skipped, leaving the canopy bare mid-growth.
+      if (p >= w.start + 0.08 * (w.end - w.start)) max = i;
+    }
+    return max;
   }
 
   /**
@@ -533,6 +1941,55 @@ export class Tree extends THREE.Group {
   }
 
   /**
+   * Async, chunked variant of {@link #meshSkeleton}. Pushes vertices for one
+   * branch at a time but yields to the browser every CHUNK branches (and
+   * again across the leaf loop) so meshing a dense canopy doesn't block the
+   * main thread. Returns the same buffers shape as #meshSkeleton.
+   * @param {LODDetail} detail
+   * @returns {Promise<{ branches: object, leaves: object }>}
+   */
+  async #meshSkeletonAsync(detail = {}) {
+    const sectionStride = Math.max(1, Math.floor(detail.sectionStride ?? 1));
+    const segmentFactor = detail.segmentFactor ?? 1;
+    const leafStride = Math.max(1, Math.floor(detail.leafStride ?? 1));
+    const leafScale = detail.leafScale ?? 1;
+    const billboard = detail.billboard ?? this.options.leaves.billboard;
+
+    const branches = {
+      verts: [],
+      normals: [],
+      uvs: [],
+      indices: [],
+      branchIndex: [],
+    };
+
+    const leaves = {
+      verts: [],
+      normals: [],
+      indices: [],
+      uvs: [],
+    };
+
+    let i = 0;
+    for (const skeletonBranch of this.skeleton.branches) {
+      this.#meshBranch(branches, skeletonBranch, i, sectionStride, segmentFactor);
+      if ((++i & 63) === 0) await yieldToBrowser();
+    }
+
+    for (let j = 0; j < this.skeleton.leaves.length; j += leafStride) {
+      const leaf = this.skeleton.leaves[j];
+      if (leaf.slab) {
+        this.#meshSlab(leaves, leaf, leafScale);
+      } else {
+        this.#meshLeaf(leaves, leaf, leafScale, billboard);
+      }
+      if ((j & 255) === 0) await yieldToBrowser();
+    }
+
+    return { branches, leaves };
+  }
+
+  /**
    * Grows a branch's skeleton, queueing child branches and recording leaf
    * placements. Consumes RNG in the exact order of the original interleaved
    * generator so seeds keep producing identical trees.
@@ -545,7 +2002,7 @@ export class Tree extends THREE.Group {
     let sectionLength =
       branch.length /
       branch.sectionCount /
-      (this.options.type === 'Deciduous' ? this.options.branch.levels - 1 : 1);
+      (this.options.type === TreeType.Deciduous ? this.options.branch.levels - 1 : 1);
 
     // This information is used for generating child branches after the branch
     // geometry has been constructed
@@ -771,36 +2228,44 @@ export class Tree extends THREE.Group {
     // the trunk and only when roots > 0. Uses a dedicated RNG so it never
     // perturbs the main generation stream.
     if (butt && butt.roots > 0) {
-      this.#generateRoots(sections, butt);
+      this.#generateRoots(sections, butt, branch.path);
     }
 
     // Deciduous trees have a terminal branch that grows out of the
     // end of the parent branch. Dead branches don't grow terminal branches.
     if (this.options.type === 'deciduous' && !branch.dead) {
       const lastSection = sections[sections.length - 1];
+      const tipG = this.#growthLevel(branch.level + 1);
 
       if (branch.level < this.options.branch.levels) {
-        const tipPath = branch.path + 'c';
-        const tipOv = (this.options.branch.overrides && this.options.branch.overrides[tipPath]) || {};
-        const tipLength = tipOv.length ?? this.options.branch.length[branch.level + 1];
-        const tipSections = tipOv.sections ?? branch.sectionCount;
-        const tipSegments = tipOv.segments ?? branch.segmentCount;
-        const tipRng = this.options.rngMode === 'perBranch' ? this.#makeRng(tipPath) : null;
-        this.branchQueue.push(
-          new Branch(
-            lastSection.origin,
-            lastSection.orientation,
-            tipLength,
-            lastSection.radius,
-            branch.level + 1,
-            tipSections,
-            tipSegments,
-            tipPath,
-            tipRng,
-          ),
-        );
+        // Growth: the tip (a level+1 branch) does not exist until its level's
+        // birth window opens — the parent simply ends there, like a real
+        // young twig.
+        if (!tipG || tipG.length >= 0.36) {
+          const tipPath = branch.path + 'c';
+          const tipOv = (this.options.branch.overrides && this.options.branch.overrides[tipPath]) || {};
+          const tipLength = (tipOv.length ?? this.options.branch.length[branch.level + 1])
+            * (tipG?.length ?? 1);
+          const tipSections = tipOv.sections ?? branch.sectionCount;
+          const tipSegments = tipOv.segments ?? branch.segmentCount;
+          const tipRng = this.options.rngMode === 'perBranch' ? this.#makeRng(tipPath) : null;
+          this.branchQueue.push(
+            new Branch(
+              lastSection.origin,
+              lastSection.orientation,
+              tipLength,
+              lastSection.radius * (tipG?.radius ?? 1),
+              branch.level + 1,
+              tipSections,
+              tipSegments,
+              tipPath,
+              tipRng,
+            ),
+          );
+        }
       } else {
-        this.#recordLeaf(lastSection.origin, lastSection.orientation, rng);
+        this.#recordLeaf(lastSection.origin, lastSection.orientation, rng,
+          this.#ov(branch)?.leafScale ?? 1);
       }
     }
 
@@ -809,25 +2274,37 @@ export class Tree extends THREE.Group {
       return;
     }
 
-    // If we are on the last branch level, generate leaves
-    const leavesLevel = Math.min(
-      this.options.leaves.level ?? this.options.branch.levels,
-      this.options.branch.levels,
-    );
+    // If we are on the last branch level, generate leaves. During growth the
+    // "terminal" level is the deepest level that has started growing, so a
+    // young tree carries leaves on the trunk / early branches — the canopy
+    // is never bare.
+    const growthActive = !!(this.options.growth && this.options.growth.enabled);
+    const leavesLevel = growthActive
+      ? Math.min(this.#grownMaxLevel(), this.options.branch.levels)
+      : Math.min(
+        this.options.leaves.level ?? this.options.branch.levels,
+        this.options.branch.levels,
+      );
+    const branchG = growthActive ? this.#growthLevel(branch.level) : null;
+    const leafGrowth = branchG?.length ?? 1;
 
     if (branch.level < this.options.branch.levels) {
       this.generateChildBranches(
-        this.#branchChildren(branch),
+        growthActive
+          ? this.#growthChildren(branch.level + 1, this.#branchChildren(branch))
+          : this.#branchChildren(branch),
         branch.level + 1,
         sections,
         rng,
         branch.path,
       );
       if (branch.level >= leavesLevel) {
-        this.generateLeaves(sections, rng, branchLength);
+        this.generateLeaves(sections, rng, branchLength,
+          this.#ov(branch)?.leafScale ?? 1, leafGrowth);
       }
     } else {
-      this.generateLeaves(sections, rng, branchLength);
+      this.generateLeaves(sections, rng, branchLength,
+        this.#ov(branch)?.leafScale ?? 1, leafGrowth);
     }
   }
 
@@ -889,9 +2366,15 @@ export class Tree extends THREE.Group {
       );
 
       // Linearly interpolate radius
+      // Growth: children scale with their own level's birth window (with a
+      // per-child stagger), and a child whose window hasn't opened yet is
+      // skipped entirely — it does not exist until its level starts growing.
+      const growth = this.#growthLevel(level, this.#growthStagger(i, count));
+      if (growth && growth.length < 0.36) continue;
       const childBranchRadius =
-        this.options.branch.radius[level] *
-        ((1 - alpha) * sectionA.radius + alpha * sectionB.radius);
+        (this.options.branch.radius[level] *
+          ((1 - alpha) * sectionA.radius + alpha * sectionB.radius))
+        * (growth?.radius ?? 1);
 
       // Linearlly interpolate the orientation
       const qA = new THREE.Quaternion().setFromEuler(sectionA.orientation);
@@ -926,7 +2409,8 @@ export class Tree extends THREE.Group {
         (childOv.length ?? this.options.branch.length[level]) *
         (this.options.type === TreeType.Evergreen
           ? 1.0 - childBranchStart
-          : 1.0);
+          : 1.0) *
+        (growth?.length ?? 1);
 
       // Stage D: dead branch roll. Uses a dedicated deterministic RNG keyed
       // by the child's path so it never perturbs the main generation stream.
@@ -991,6 +2475,13 @@ export class Tree extends THREE.Group {
       const alpha =
         (t - sectionIndex / (sections.length - 1)) / (1 / (sections.length - 1));
 
+      // Growth: user branches follow their level's birth window, staggered
+      // by attachment height (higher on the parent = newer growth = appears
+      // a beat later) and by id. Not born yet → skip entirely.
+      const growth = this.#growthLevel(level,
+        -0.08 * (ub.t ?? 0.5) - 0.02 * ((ub.id ?? 0) % 4));
+      if (growth && growth.length < 0.36) continue;
+
       // Interpolate the attach point on the parent (same math as
       // generateChildBranches): origin on the axis, radius matched to the
       // parent's local thickness, orientation rotated out by angle+radial.
@@ -999,9 +2490,15 @@ export class Tree extends THREE.Group {
         sectionB.origin,
         alpha,
       );
+      // ov.radius is parent-RELATIVE; ov.radiusAbs (set by pasteBranch) is an
+      // ABSOLUTE radius that ignores the parent's local thickness — an
+      // explicit relative radius (user edit) always wins.
       const radius =
-        (ov.radius ?? this.options.branch.radius[level]) *
-        ((1 - alpha) * sectionA.radius + alpha * sectionB.radius);
+        (ov.radius ??
+          ov.radiusAbs ??
+          this.options.branch.radius[level] *
+            ((1 - alpha) * sectionA.radius + alpha * sectionB.radius))
+        * (growth?.radius ?? 1);
 
       const qA = new THREE.Quaternion().setFromEuler(sectionA.orientation);
       const qB = new THREE.Quaternion().setFromEuler(sectionB.orientation);
@@ -1022,7 +2519,7 @@ export class Tree extends THREE.Group {
       const branch = new Branch(
         origin,
         new THREE.Euler().setFromQuaternion(q3.multiply(q2.multiply(q1))),
-        ov.length ?? this.options.branch.length[level],
+        (ov.length ?? this.options.branch.length[level]) * (growth?.length ?? 1),
         radius,
         level,
         ov.sections ?? this.options.branch.sections[level],
@@ -1040,6 +2537,109 @@ export class Tree extends THREE.Group {
       // (added later at a lower point) can find its parent in the skeleton.
       while (this.branchQueue.length > 0) {
         this.#growBranch(this.branchQueue.shift());
+      }
+      for (const sb of this.skeleton.branches) {
+        if (!byPath.has(sb.path)) byPath.set(sb.path, sb);
+      }
+    }
+  }
+
+  /**
+   * Async, chunked variant of {@link #growUserBranches}. Mirrors its logic but
+   * yields to the browser while draining the branch queue so a forest of
+   * hand-placed branches never blocks the main thread.
+   * @returns {Promise<void>}
+   */
+  async #growUserBranchesAsync() {
+    const list = this.options.branch.userBranches;
+    if (!list || !list.length) return;
+
+    const byPath = new Map(this.skeleton.branches.map((b) => [b.path, b]));
+
+    let processed = 0;
+    for (const ub of list) {
+      // The parent may have vanished (preset/param change) — skip gracefully.
+      const parent = byPath.get(ub.parentPath);
+      if (!parent) continue;
+
+      const path = `${ub.parentPath}@u${ub.id}`;
+      const level = Math.min(parent.level + 1, this.options.branch.levels);
+      const ov = (this.options.branch.overrides && this.options.branch.overrides[path]) || {};
+
+      const sections = parent.sections;
+      const t = Math.min(0.98, Math.max(0.02, ub.t ?? 0.5));
+      const sectionIndex = Math.floor(t * (sections.length - 1));
+      const sectionA = sections[sectionIndex];
+      const sectionB = sectionIndex === sections.length - 1
+        ? sectionA
+        : sections[sectionIndex + 1];
+      const alpha =
+        (t - sectionIndex / (sections.length - 1)) / (1 / (sections.length - 1));
+
+      // Growth: user branches follow their level's birth window, staggered
+      // by attachment height (higher on the parent = newer growth = appears
+      // a beat later) and by id. Not born yet → skip entirely.
+      const growth = this.#growthLevel(level,
+        -0.08 * (ub.t ?? 0.5) - 0.02 * ((ub.id ?? 0) % 4));
+      if (growth && growth.length < 0.36) continue;
+
+      // Interpolate the attach point on the parent (same math as
+      // generateChildBranches): origin on the axis, radius matched to the
+      // parent's local thickness, orientation rotated out by angle+radial.
+      const origin = new THREE.Vector3().lerpVectors(
+        sectionA.origin,
+        sectionB.origin,
+        alpha,
+      );
+      // ov.radius is parent-RELATIVE; ov.radiusAbs (set by pasteBranch) is an
+      // ABSOLUTE radius that ignores the parent's local thickness — an
+      // explicit relative radius (user edit) always wins.
+      const radius =
+        (ov.radius ??
+          ov.radiusAbs ??
+          this.options.branch.radius[level] *
+            ((1 - alpha) * sectionA.radius + alpha * sectionB.radius))
+        * (growth?.radius ?? 1);
+
+      const qA = new THREE.Quaternion().setFromEuler(sectionA.orientation);
+      const qB = new THREE.Quaternion().setFromEuler(sectionB.orientation);
+      const parentOrientation = new THREE.Euler().setFromQuaternion(
+        qB.slerp(qA, alpha),
+      );
+
+      const q1 = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(1, 0, 0),
+        (ov.angle ?? this.options.branch.angle[level]) / (180 / Math.PI),
+      );
+      const q2 = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        ub.radialAngle ?? 0,
+      );
+      const q3 = new THREE.Quaternion().setFromEuler(parentOrientation);
+
+      const branch = new Branch(
+        origin,
+        new THREE.Euler().setFromQuaternion(q3.multiply(q2.multiply(q1))),
+        (ov.length ?? this.options.branch.length[level]) * (growth?.length ?? 1),
+        radius,
+        level,
+        ov.sections ?? this.options.branch.sections[level],
+        ov.segments ?? this.options.branch.segments[level],
+        path,
+        this.#makeRng(path),
+      );
+      // Always use this branch's own RNG, even in 'shared' mode, and carry
+      // the descriptor so the skeleton entry (and the editor UI) can find it.
+      branch.forceOwnRng = true;
+      branch.user = ub;
+
+      this.branchQueue.push(branch);
+      // Drain immediately so a user branch attached to another user branch
+      // (added later at a lower point) can find its parent in the skeleton.
+      while (this.branchQueue.length > 0) {
+        const b = this.branchQueue.shift();
+        this.#growBranch(b);
+        if ((++processed & 63) === 0) await yieldToBrowser();
       }
       for (const sb of this.skeleton.branches) {
         if (!byPath.has(sb.path)) byPath.set(sb.path, sb);
@@ -1116,6 +2716,206 @@ export class Tree extends THREE.Group {
   }
 
   /**
+   * Stage F (copy/paste): resolves the parent path of a branch path.
+   *   "0"          → null (trunk, no parent)
+   *   "0.2"        → "0"
+   *   "0.2c"       → "0.2"   (tip continuation shares the parent's level)
+   *   "0.2@u1"     → "0.2"   (user branch)
+   * @param {string} path
+   * @returns {string|null}
+   */
+  #parentPathOf(path) {
+    if (!path) return null;
+    // Nested user branches produce paths like "0@u1@u2" — the parent is
+    // everything before the LAST '@', not before the first.
+    if (path.includes('@')) {
+      const i = path.lastIndexOf('@');
+      return i <= 0 ? null : path.slice(0, i);
+    }
+    if (path.endsWith('c')) return path.slice(0, -1);
+    const i = path.lastIndexOf('.');
+    return i < 0 ? null : path.slice(0, i);
+  }
+
+  /**
+   * Stage F (copy/paste): finds where a world point sits on a parent branch —
+   * the normalized distance `t` along the branch plus the radial angle of the
+   * point around the branch's local axis. Lets a copied branch preserve its
+   * exact attach position when re-parented elsewhere.
+   * @param {object} parentSb parent skeleton branch (has .sections)
+   * @param {THREE.Vector3} point world-space attach point
+   * @returns {{t: number, radialAngle: number}}
+   */
+  #attachOnParent(parentSb, point) {
+    const sections = parentSb.sections;
+    if (!sections || sections.length < 2) return { t: 0.5, radialAngle: 0 };
+    let best = { d: Infinity, t: 0.5, i: 0, alpha: 0 };
+    for (let i = 0; i < sections.length - 1; i++) {
+      const a = sections[i].origin;
+      const b = sections[i + 1].origin;
+      const ab = b.clone().sub(a);
+      const len2 = ab.lengthSq() || 1e-9;
+      let alpha = ab.dot(point.clone().sub(a)) / len2;
+      alpha = Math.max(0, Math.min(1, alpha));
+      const proj = a.clone().add(ab.multiplyScalar(alpha));
+      const d = proj.distanceToSquared(point);
+      if (d < best.d) best = { d, t: (i + alpha) / (sections.length - 1), i, alpha };
+    }
+    const secA = sections[best.i];
+    const secB = sections[best.i + 1];
+    const qA = new THREE.Quaternion().setFromEuler(secA.orientation);
+    const qB = new THREE.Quaternion().setFromEuler(secB.orientation);
+    const q = qB.clone().slerp(qA, best.alpha);
+    const origin = secA.origin.clone().lerp(secB.origin, best.alpha);
+    const vLocal = point.clone().sub(origin).applyQuaternion(q.clone().invert());
+    return { t: best.t, radialAngle: Math.atan2(vLocal.z, vLocal.x) };
+  }
+
+  /**
+   * Stage F (copy/paste): captures a branch and its entire descendant subtree
+   * into a serializable, parent-independent template. Each node stores its local
+   * defining params (length/radius/angle/children/gnarliness/taper/twist/
+   * sections/segments/start, plus force/curve when present) and its attachment
+   * (t, radialAngle) relative to its parent — so the whole sub-tree can be
+   * re-parented anywhere and still keep its internal shape. A `scale` reference
+   * (the original parent's radius) is stored so paste can proportionally shrink
+   * the copy when it lands on a thinner branch.
+   * @param {number} index skeleton branch index of the subtree root
+   * @returns {{root: object, origParentRadius: number}|null}
+   */
+  copyBranch(index) {
+    const sb = this.skeleton?.branches?.[index];
+    if (!sb) return null;
+    const byPath = new Map(this.skeleton.branches.map((b) => [b.path, b]));
+
+    const buildSpec = (branch) => {
+      const path = branch.path;
+      const ov = (this.options.branch.overrides && this.options.branch.overrides[path]) || {};
+      const level = branch.level;
+      const lvlDef = (k) => this.options.branch[k][level];
+      const params = {
+        length: ov.length ?? lvlDef('length'),
+        radius: ov.radius ?? lvlDef('radius'),
+        angle: ov.angle ?? lvlDef('angle'),
+        children: ov.children ?? lvlDef('children') ?? 0,
+        gnarliness: ov.gnarliness ?? lvlDef('gnarliness'),
+        taper: ov.taper ?? lvlDef('taper'),
+        twist: ov.twist ?? lvlDef('twist'),
+        sections: ov.sections ?? lvlDef('sections'),
+        segments: ov.segments ?? lvlDef('segments'),
+        start: ov.start ?? lvlDef('start') ?? 0.3,
+      };
+      if (ov.force) params.force = ov.force;
+      if (ov.curve) params.curve = ov.curve;
+
+      // Actual absolute base radius from the skeleton — needed so paste can
+      // preserve the *visual* thickness (nominal radius is parent-relative).
+      const absRadius = branch.baseRadius ?? branch.radius ?? 1;
+
+      let attach = { t: 0.5, radialAngle: 0 };
+      const parentPath = this.#parentPathOf(path);
+      if (branch.user) {
+        attach = { t: branch.user.t ?? 0.5, radialAngle: branch.user.radialAngle ?? 0 };
+      } else if (parentPath && byPath.has(parentPath)) {
+        attach = this.#attachOnParent(byPath.get(parentPath), branch.sections[0].origin);
+      }
+
+      const children = this.skeleton.branches
+        .filter((b) => this.#parentPathOf(b.path) === path)
+        .map(buildSpec);
+
+      return { params, attach, children, absRadius };
+    };
+
+    const origParentPath = this.#parentPathOf(sb.path);
+    const origParentRadius = (origParentPath && byPath.get(origParentPath)?.baseRadius)
+      || sb.baseRadius
+      || 1;
+
+    return { root: buildSpec(sb), origParentRadius: Math.max(1e-3, origParentRadius) };
+  }
+
+  /**
+   * Stage F (copy/paste): re-creates a copied subtree (from {@link copyBranch})
+   * as new user branches parented under `parentIndex`. The subtree's internal
+   * shape is preserved; lengths & radii are scaled by the ratio of the new
+   * parent's radius to the original parent's radius, so pasting onto a thin
+   * twig shrinks the whole copy while pasting onto the trunk keeps it full size.
+   * Every pasted branch gets `children: 0` so it does not also auto-spawn the
+   * default procedural children (the copied children are re-created explicitly).
+   * Does NOT regenerate — call generate() afterwards. Returns the new paths.
+   * @param {number} parentIndex skeleton branch index of the new parent
+   * @param {{root: object, origParentRadius: number}} clipboard
+   * @returns {string[]|null}
+   */
+  pasteBranch(parentIndex, clipboard) {
+    const parent = this.skeleton?.branches?.[parentIndex];
+    if (!parent || !clipboard || !clipboard.root) return null;
+
+    const list = this.options.branch.userBranches
+      || (this.options.branch.userBranches = []);
+    const overrides = this.options.branch.overrides
+      || (this.options.branch.overrides = {});
+
+    let nextId = list.reduce((m, u) => Math.max(m, u.id || 0), 0) + 1;
+    const s = (parent.baseRadius && clipboard.origParentRadius)
+      ? Math.max(0.01, parent.baseRadius / clipboard.origParentRadius)
+      : 1;
+
+    // #growBranch amplifies gnarliness by max(1, 1/sqrt(radius)). When the
+    // subtree is uniformly scaled by s, compensating the nominal gnarliness by
+    // the amp ratio keeps the pasted copy's bend angles identical to the
+    // source's (otherwise a thick branch pasted onto a twig coils up).
+    const gnarlComp = (srcAbsRadius) => {
+      const r0 = Math.max(1e-4, srcAbsRadius || 1);
+      const r1 = Math.max(1e-4, r0 * s);
+      const amp0 = Math.max(1, 1 / Math.sqrt(r0));
+      const amp1 = Math.max(1, 1 / Math.sqrt(r1));
+      return amp0 / amp1;
+    };
+
+    const created = [];
+    const pasteNode = (spec, parentPath) => {
+      const id = nextId++;
+      const t = Math.min(0.98, Math.max(0.02, spec.attach.t ?? 0.5));
+      const ub = {
+        id,
+        parentPath,
+        t,
+        radialAngle: spec.attach.radialAngle ?? 0,
+      };
+      list.push(ub);
+      const path = `${parentPath}@u${id}`;
+
+      const comp = gnarlComp(spec.absRadius);
+      const ov = { children: 0 };
+      for (const k of ['length', 'angle', 'gnarliness', 'taper', 'twist', 'sections', 'segments', 'start']) {
+        let v = spec.params[k];
+        if (v === undefined || v === null) continue;
+        if (k === 'length') v = v * s;
+        if (k === 'gnarliness') v = v * comp;
+        ov[k] = v;
+      }
+      // Absolute radius: preserves the source's visual thickness × s exactly,
+      // independent of the new parent's local taper/level quirks. (The
+      // user-branch grower prefers an explicit ov.radius if the user edits it
+      // later.) Leaves on the pasted subtree scale by the same factor.
+      ov.radiusAbs = Math.max(1e-4, (spec.absRadius ?? spec.params.radius ?? 1) * s);
+      ov.leafScale = s;
+      if (spec.params.force) ov.force = spec.params.force;
+      if (spec.params.curve) ov.curve = spec.params.curve;
+      overrides[path] = ov;
+
+      // Record BEFORE recursing so created[0] is always the subtree root.
+      created.push(path);
+      for (const child of spec.children) pasteNode(child, path);
+    };
+
+    pasteNode(clipboard.root, parent.path);
+    return created;
+  }
+
+  /**
    * Stage F: converts a world-space point on/near a branch into an
    * attachment descriptor (t along the branch + radial angle around its
    * axis at that point). Used by the app's right-click "add branch here".
@@ -1161,9 +2961,15 @@ export class Tree extends THREE.Group {
    *  orientation: THREE.Euler,
    *  radius: number
    * }[]} sections The parent branch's sections
+   * @param {number} [leafScaleMult] Per-branch leaf size multiplier (set by
+   *  pasteBranch so a pasted, uniformly scaled subtree gets proportionally
+   *  scaled leaves too). Defaults to 1.
+   * @param {number} [growthMult=1] Leaf-count multiplier for the growth
+   *  animation: a branch that is still elongating carries proportionally
+   *  fewer leaves (0.35 → 1 as the branch matures).
    * @returns
    */
-  generateLeaves(sections, rng, branchLength) {
+  generateLeaves(sections, rng, branchLength, leafScaleMult = 1, growthMult = 1) {
     const radialOffset = rng.random();
     const baseCount = this.options.leaves.count;
 
@@ -1172,7 +2978,7 @@ export class Tree extends THREE.Group {
     // leaves the count unchanged (legacy behavior).
     const density = this.options.leaves.density || 0;
     const factor = Math.max(0.1, 1 + density * (branchLength / (this.trunkLength || 1) - 1));
-    const count = Math.max(1, Math.round(baseCount * factor));
+    const count = Math.max(1, Math.round(baseCount * factor * growthMult));
 
     const startMin = this.options.leaves.start;
     const heightStep = (1.0 - startMin) / count;
@@ -1230,7 +3036,7 @@ export class Tree extends THREE.Group {
         q3.multiply(q2.multiply(q1)),
       );
 
-      this.#recordLeaf(leafOrigin, leafOrientation, rng);
+      this.#recordLeaf(leafOrigin, leafOrientation, rng, leafScaleMult);
     }
   }
 
@@ -1245,10 +3051,10 @@ export class Tree extends THREE.Group {
    * @param {{origin: THREE.Vector3, orientation: THREE.Euler, radius: number, t: number}[]} sections
    * @param {object} butt this.options.trunk.buttress
    */
-  #generateRoots(sections, butt) {
+  #generateRoots(sections, butt, basePath = '0') {
     const base = sections[0];
     if (!base) return;
-    const rrng = this.#makeRng(base.path + ':buttress-roots');
+    const rrng = this.#makeRng(basePath + ':buttress-roots');
     const count = Math.max(0, Math.round(butt.roots));
     if (count <= 0) return;
 
@@ -1286,7 +3092,7 @@ export class Tree extends THREE.Group {
         sections: segs,
         segmentCount: 6,
         baseRadius: startR,
-        path: base.path + '.root' + k,
+        path: basePath + '.root' + k,
         level: 0,
         length: end.distanceTo(start),
       });
@@ -1299,10 +3105,12 @@ export class Tree extends THREE.Group {
   * @param {THREE.Vector3} origin The starting point of the leaf
   * @param {THREE.Euler} orientation The orientation of the leaf
   * @param {RNG} rng The stream to sample size variance from
+  * @param {number} [scaleMult] Per-branch leaf scale (pasted subtrees)
   */
-  #recordLeaf(origin, orientation, rng) {
+  #recordLeaf(origin, orientation, rng, scaleMult = 1) {
     const size =
       this.options.leaves.size *
+      scaleMult *
       (1 +
         rng.random(
           this.options.leaves.sizeVariance,
@@ -1327,7 +3135,7 @@ export class Tree extends THREE.Group {
           new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), spin),
         );
       slab = {
-        radius: slabOpts.radius * (1 + rng.random(slabOpts.radiusVariance, -slabOpts.radiusVariance)),
+        radius: slabOpts.radius * scaleMult * (1 + rng.random(slabOpts.radiusVariance, -slabOpts.radiusVariance)),
         thickness: slabOpts.thickness,
         layers: slabOpts.layers,
         segments: slabOpts.segments,
